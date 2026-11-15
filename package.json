@@ -1,0 +1,11 @@
+{
+  "name": "pontis-dealer-app",
+  "private": true,
+  "description": "Pontis Energy dealer app: dealers send client details as a checked PDF on WhatsApp",
+  "scripts": {
+    "dev": "wrangler pages dev public --d1 DB=pontis-dealer --port 8788 --compatibility-date 2025-01-01"
+  },
+  "devDependencies": {
+    "wrangler": "^4.162.0"
+  }
+}

@@ -1,0 +1,11 @@
+# Copy this file to .dev.vars for local testing (never commit .dev.vars).
+# On Cloudflare, add the same four values under Settings > Variables and Secrets (as Secrets).
+
+# Admin login (Pontis office)
+ADMIN_PHONE=9000000000
+ADMIN_PASSWORD=change-me
+
+# Long random strings (40+ characters). SESSION_SECRET can be changed to log everyone out.
+# Never change PASSWORD_SECRET after dealers are added: their passwords would stop working.
+SESSION_SECRET=replace-with-a-long-random-string
+PASSWORD_SECRET=replace-with-another-long-random-string
