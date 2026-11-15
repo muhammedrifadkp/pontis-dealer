@@ -1,6 +1,6 @@
 // Offline support: the app's own files are kept on the phone, so forms and PDFs work without internet.
 // Logins (/api) always go to the server. Raise VERSION with every release.
-const VERSION = '2026.11.15-1';
+const VERSION = '2026.11.15-2';
 const CACHE = `pontis-dealer-${VERSION}`;
 const FILES = [
   './', 'index.html', 'app.css', 'manifest.webmanifest',

@@ -403,7 +403,9 @@ async function formView(id) {
 
   function showError(f) {
     const w = wrapOf(f.key); if (!w) return '';
-    const msg = (submitted || touched.has(f.key)) ? check(f, d.values) : '';
+    // the serial list is filled box by box, so it is only checked after "Make PDF"
+    const show = submitted || (touched.has(f.key) && f.type !== 'serials');
+    const msg = show ? check(f, d.values) : '';
     $('.err', w).textContent = msg;
     w.classList.toggle('has-err', !!msg);
     const inp = $(`#f-${f.key}`, w);
@@ -421,6 +423,8 @@ async function formView(id) {
     if (submitted) {
       const bad = list.filter(f => showError(f));
       $('#formSum').textContent = bad.length ? `${bad.length} thing${bad.length > 1 ? 's' : ''} to fix before making the PDF.` : '';
+    } else {
+      list.filter(f => touched.has(f.key)).forEach(showError); // keep shown messages up to date
     }
   }
 
@@ -429,9 +433,10 @@ async function formView(id) {
     const box = $(`#f-${f.key}`, form); if (!box) return;
     const n = Math.min(200, Number(d.values[f.countKey]) || 0);
     const list = Array.isArray(d.values[f.key]) ? d.values[f.key] : [];
-    if (box.children.length === n) return;
+    if (box.dataset.n === String(n)) return; // already showing this many boxes
+    box.dataset.n = String(n);
     box.innerHTML = n ? Array.from({ length: n }, (_, i) => `<label class="serial"><span>${i + 1}</span><input type="text" data-serial="${i}" value="${esc(list[i] || '')}" autocomplete="off" autocapitalize="characters" spellcheck="false" class="upper mono" aria-label="Panel ${i + 1} serial number"></label>`).join('')
-      : '<p class="muted small">Enter the number of panels above, then a box appears for each serial number.</p>';
+      : '<p class="serials-empty">Enter the <b>number of panels</b> above. A box then appears here for each panel’s serial number.</p>';
   }
   function renderThumbs(f) {
     const ul = $(`[data-thumbs="${f.key}"]`, form); if (!ul) return;
@@ -579,7 +584,16 @@ async function formView(id) {
     go(`#/done/${d.id}`);
   });
 
-  current = () => { clearTimeout(saveT); store.saveDraft(d).catch(() => {}); freeUrls(); };
+  // save straight away when the app is closed or goes to the background (e.g. switching to WhatsApp)
+  const flush = () => { clearTimeout(saveT); store.saveDraft(d).catch(() => {}); };
+  const onHide = () => { if (document.visibilityState === 'hidden') flush(); };
+  document.addEventListener('visibilitychange', onHide);
+  window.addEventListener('pagehide', flush);
+  current = () => {
+    document.removeEventListener('visibilitychange', onHide);
+    window.removeEventListener('pagehide', flush);
+    flush(); freeUrls();
+  };
 }
 
 // ---------- dealer: PDF ready ----------
