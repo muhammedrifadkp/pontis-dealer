@@ -2,7 +2,7 @@
 // signal, and forms and PDFs work without internet. Logins (/api) always go to the server.
 // Raise VERSION with every release: phones then fetch the new files in the background and switch to
 // them together (the open app reloads itself when no form is open, otherwise on the next start).
-const VERSION = '2026.11.16-1';
+const VERSION = '2026.11.16-2';
 const CACHE = `pontis-dealer-${VERSION}`;
 const PAGE = './'; // the app page (Cloudflare only redirects index.html to it, and a redirect cannot open the app)
 const FILES = [

@@ -34,7 +34,7 @@ export const SECTION_1 = [
   { key: 'bankDoc', label: 'Bank document photo', type: 'photo' },
   { key: 'landmark', label: 'Landmark', type: 'text', required: false, placeholder: 'Near …' },
   { key: 'email', label: 'Email ID', type: 'email' },
-  { key: 'roofPhoto', label: 'GPS photo of the rooftop', type: 'gpsphoto', hint: 'Taken with the camera at the site; the location and time are printed on it' }
+  { key: 'roofPhoto', label: 'GPS photo of the rooftop', type: 'gpsphoto', hint: 'The location and time are printed on it' }
 ];
 
 export const SECTION_2 = [
@@ -115,7 +115,7 @@ export function check(f, values) {
   const required = f.required !== false;
   if (isPhoto(f)) {
     const n = Array.isArray(v) ? v.length : 0;
-    if (!n) return required ? (f.type === 'gpsphoto' ? 'Take this photo with the camera.' : 'Add this photo.') : '';
+    if (!n) return required ? (f.type === 'gpsphoto' ? 'Add this photo.' : 'Add this photo.') : '';
     if (f.type === 'photos' && f.min && n < f.min) return `Add at least ${f.min} photo${f.min > 1 ? 's' : ''}.`;
     return '';
   }

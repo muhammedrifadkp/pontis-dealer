@@ -360,8 +360,8 @@ function photoHtml(f) {
   const multi = f.type === 'photos', gps = f.type === 'gpsphoto';
   return `<div class="photos${gps ? ' gps' : ''}">
     <ul class="thumbs" data-thumbs="${f.key}"></ul>
-    <label class="btn add-photo"><input class="vh" type="file" accept="image/*" data-photo="${f.key}"${gps ? ' capture="environment"' : ''}${multi ? ' multiple' : ''} aria-labelledby="f-${f.key}-lbl">
-      ${gps ? ICON.camera : ICON.image}<span data-addlabel>${gps ? 'Take photo' : 'Add photo'}</span></label>
+    <label class="btn add-photo"><input class="vh" type="file" accept="image/*" data-photo="${f.key}"${multi ? ' multiple' : ''} aria-labelledby="f-${f.key}-lbl">
+      ${gps ? ICON.camera : ICON.image}<span data-addlabel>Add photo</span></label>
     <p class="photo-status" data-status="${f.key}" aria-live="polite"></p>
   </div>`;
 }
@@ -451,7 +451,7 @@ async function formView(id) {
         <button type="button" class="x" data-remove="${f.key}" data-i="${i}" aria-label="Remove ${esc(f.label)} ${i + 1}">×</button></li>`).join('');
     });
     const lbl = $(`[data-photo="${f.key}"]`, form).parentElement.querySelector('[data-addlabel]');
-    lbl.textContent = f.type === 'photos' ? (list.length ? 'Add more photos' : 'Add photos') : list.length ? (f.type === 'gpsphoto' ? 'Take again' : 'Replace photo') : (f.type === 'gpsphoto' ? 'Take photo' : 'Add photo');
+    lbl.textContent = f.type === 'photos' ? (list.length ? 'Add more photos' : 'Add photos') : list.length ? 'Replace photo' : 'Add photo';
   }
 
   allFields.forEach(f => {
@@ -491,7 +491,7 @@ async function formView(id) {
   });
   form.addEventListener('focusout', e => { const f = fieldByKey[e.target.name]; if (f && e.target.value) { touched.add(f.key); showError(f); } });
 
-  // GPS photos: start finding the location as the camera opens
+  // GPS photos: start finding the location as the photo picker opens
   let gpsWait = null;
   form.addEventListener('click', async e => {
     const lab = e.target.closest('.photos.gps .add-photo');
@@ -537,8 +537,6 @@ async function formView(id) {
     try {
       let gps = null;
       if (f.type === 'gpsphoto') {
-        const fileAge = Date.now() - (files[0].lastModified || Date.now());
-        if (fileAge > 3 * 60 * 1000) throw new Error('This photo was not taken just now. Use the camera to take a new photo at the site.');
         status.textContent = 'Getting the GPS location…';
         let pos = gpsWait ? await gpsWait : null;
         if (!pos || pos instanceof Error) pos = await getPosition();
