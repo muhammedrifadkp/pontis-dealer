@@ -1,21 +1,27 @@
 // Kept on the dealer's phone only: unfinished forms (drafts) with their photos, and a short list of
 // clients already sent (name, consumer number and mobile only) to fill Section 2 quickly.
-// Drafts are deleted after the PDF is sent ("Done") or after DRAFT_DAYS.
+// Drafts are deleted after the PDF is sent ("Done") or DRAFT_DAYS after they were last changed.
+// On the office's device: the Excel list read from received PDFs (the "office" store).
 
 const DB_NAME = 'pontis-dealer';
-const DRAFT_DAYS = 7;
+export const DRAFT_DAYS = 30;
 let dbp = null;
 
 function openDb() {
   if (!dbp) {
     dbp = new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
+      const req = indexedDB.open(DB_NAME, 2);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('drafts')) db.createObjectStore('drafts', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('office')) db.createObjectStore('office', { keyPath: 'ref' });
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => { db.close(); dbp = null; }; // let a newer version of the app upgrade the storage
+        resolve(db);
+      };
       req.onerror = () => { dbp = null; reject(req.error); };
     });
   }
@@ -80,9 +86,18 @@ export async function cleanUp() {
     await deletePhotos(ids.filter(id => !keep.has(id)));
   } catch (e) { /* storage not available: nothing to clean */ }
 }
-export async function wipeAll() {
-  try { await tx('drafts', 'readwrite', s => s.clear()); await tx('photos', 'readwrite', s => s.clear()); } catch (e) { /* ignore */ }
+// Asks the browser not to clear the saved forms and photos when the phone runs low on space
+export async function keepStorage() {
+  try { if (navigator.storage && navigator.storage.persist && !(await navigator.storage.persisted())) await navigator.storage.persist(); } catch (e) { /* not supported */ }
 }
+
+// ---------- office: the Excel list, one row per PDF (Ref) ----------
+export const listOffice = () => tx('office', 'readonly', s => reqP(s.getAll())).then(r => r || []);
+export async function putOffice(rows) {
+  if (!rows.length) return;
+  await tx('office', 'readwrite', s => { rows.forEach(r => s.put(r)); });
+}
+export const clearOffice = () => tx('office', 'readwrite', s => s.clear());
 
 // ---------- clients already sent (for Section 2) ----------
 const recentKey = owner => `pontis-recent-${owner}`;

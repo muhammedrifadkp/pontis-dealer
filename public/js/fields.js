@@ -87,6 +87,10 @@ export function verhoeffOk(num) {
   return c === 0;
 }
 
+// The PDF's fonts show English letters only: Malayalam (or any other script) and emoji would print as "?"
+const PDF_TEXT = /^[\x20-\x7E -ÿ–—‘’“”•…₹]*$/;
+export const printable = s => PDF_TEXT.test(String(s ?? ''));
+
 export const digitsOnly = s => String(s ?? '').replace(/\D/g, '');
 export const normMobile = s => { const d = digitsOnly(s); return d.length > 10 ? d.slice(-10) : d; };
 
@@ -139,7 +143,9 @@ export function check(f, values) {
   const s = String(v ?? '').trim();
   if (!s) return required ? 'Required.' : '';
   switch (f.type) {
-    case 'text': return s.length < 2 ? 'Too short.' : '';
+    case 'text':
+      if (!printable(s)) return 'Type this in English letters. Malayalam letters and emoji do not show in the PDF.';
+      return s.length < 2 ? 'Too short.' : '';
     case 'consumer': return /^\d{6,16}$/.test(s) ? '' : 'Enter the consumer number in digits.';
     case 'mobile': return /^[6-9]\d{9}$/.test(s) ? '' : 'Enter a 10-digit mobile number.';
     case 'aadhaar':

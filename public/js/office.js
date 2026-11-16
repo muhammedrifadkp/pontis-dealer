@@ -8,7 +8,7 @@ export async function readPdfFiles(files) {
   for (const f of files) {
     if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { skipped.push(f.name); continue; }
     const data = readPdfData(await f.arrayBuffer());
-    if (data && SECTIONS[data.section]) rows.push(data); else skipped.push(f.name);
+    if (data && SECTIONS[data.section] && data.ref && data.fields) rows.push(data); else skipped.push(f.name);
   }
   return { rows, skipped };
 }

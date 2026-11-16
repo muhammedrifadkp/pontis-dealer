@@ -202,6 +202,7 @@ function loginView() {
       const r = await api('login', { method: 'POST', body: { phone, password } });
       setSession({ token: r.token, user: r.user });
       store.cleanUp();
+      store.keepStorage();
       go('#/');
     } catch (ex) {
       busy(btn, false);
@@ -251,9 +252,12 @@ async function homeView() {
   const drafts = await store.listDrafts(owner).catch(() => []);
   if (drafts.length) {
     $('#drafts').hidden = false;
+    // a form is removed DRAFT_DAYS after it was last changed; warn in its last week
+    const daysLeft = d => Math.max(1, Math.ceil((d.updatedAt + store.DRAFT_DAYS * 864e5 - Date.now()) / 864e5));
     $('#drafts ul').innerHTML = drafts.map(d => `<li class="item">
       <div class="item-main"><b>${esc(d.values.name || 'No name yet')}</b>
-      <span class="muted small">${esc(SECTIONS[d.section].title)}${d.mode ? ` · ${d.mode === 'loan' ? 'Loan' : 'Cash'}` : ''} · saved ${esc(ago(d.updatedAt))}</span></div>
+      <span class="muted small">${esc(SECTIONS[d.section].title)}${d.mode ? ` · ${d.mode === 'loan' ? 'Loan' : 'Cash'}` : ''} · saved ${esc(ago(d.updatedAt))}</span>
+      ${daysLeft(d) <= 7 ? `<span class="warn-text small">Removed from this phone in ${daysLeft(d)} day${daysLeft(d) === 1 ? '' : 's'} unless you open it</span>` : ''}</div>
       <div class="item-acts"><a class="btn sm" href="#/form/${esc(d.id)}">Continue</a>
       <button class="btn sm ghost danger-text" type="button" data-del-draft="${esc(d.id)}" aria-label="Delete the unfinished form for ${esc(d.values.name || 'this client')}">Delete</button></div></li>`).join('');
   }
@@ -315,13 +319,13 @@ function fieldHtml(f, v) {
   const hint = f.hint ? `<p class="hint" id="${id}-hint">${esc(f.hint)}</p>` : '';
   const describedBy = `${f.hint ? `${id}-hint ` : ''}${id}-err`;
   const val = v[f.key];
-  const input = (type, extra = '') => `<input id="${id}" name="${f.key}" type="${type}" value="${esc(val ?? '')}" aria-describedby="${describedBy}" ${f.placeholder ? `placeholder="${esc(f.placeholder)}${f.placeholder.endsWith('…') ? '' : '…'}"` : ''} ${extra}>`;
+  const input = (type, extra = '', shown = val ?? '') => `<input id="${id}" name="${f.key}" type="${type}" value="${esc(shown)}" aria-describedby="${describedBy}" ${f.placeholder ? `placeholder="${esc(f.placeholder)}${f.placeholder.endsWith('…') ? '' : '…'}"` : ''} ${extra}>`;
   let body = '';
   switch (f.type) {
     case 'text': body = input('text', 'autocomplete="off" autocapitalize="words"'); break;
     case 'consumer': body = input('text', 'inputmode="numeric" autocomplete="off" placeholder="1155…"'); break;
     case 'mobile': body = input('tel', 'inputmode="numeric" autocomplete="off" placeholder="98470 12345…"'); break;
-    case 'aadhaar': body = input('text', `inputmode="numeric" autocomplete="off" placeholder="1234 5678 9012…" value="${esc(display(f, v))}"`); break;
+    case 'aadhaar': body = input('text', 'inputmode="numeric" autocomplete="off" placeholder="1234 5678 9012…"', display(f, v)); break;
     case 'pan': body = input('text', 'autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCDE1234F…" class="upper"'); break;
     case 'email': body = input('email', 'inputmode="email" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="name@gmail.com…"'); break;
     case 'age': case 'number': body = input('text', 'inputmode="numeric" autocomplete="off"'); break;
@@ -801,46 +805,70 @@ function showLogin(dealer, password, isReset) {
 }
 
 // ---------- admin: Excel from PDFs ----------
-let excelRows = [];
+// The list is kept on this device, so PDFs can be added day by day and downloaded together.
+// One row per form (its Ref): a PDF made again after "Change details" replaces the older copy.
 function excelView() {
   document.title = 'Excel from PDFs – Pontis Energy';
   app.innerHTML = `${topBar(adminTabs('excel'))}<main class="wrap wide" id="main">
     <h1>Excel from PDFs</h1>
-    <p class="muted">Save the PDFs dealers send on WhatsApp, then choose them here (or drop them on this box). The details are read straight from the PDFs, so nothing is retyped.</p>
+    <p class="muted">Save the PDFs dealers send on WhatsApp, then choose them here (or drop them on this box). The details are read straight from the PDFs, so nothing is retyped. The list stays on this device until you clear it.</p>
     <label class="drop" id="drop"><input class="vh" type="file" accept="application/pdf,.pdf" multiple id="pdfFiles">${ICON.file}<b>Choose PDFs</b><span class="muted small">or drop them here</span></label>
-    <div id="excelOut" aria-live="polite"></div>
+    <div id="excelOut" aria-live="polite"><p class="muted">Loading…</p></div>
   </main>`;
   const out = $('#excelOut');
+  let rows = [], kept = true;
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
   const drawOut = (msg = '') => {
-    const s1 = excelRows.filter(r => r.section === 1), s2 = excelRows.filter(r => r.section === 2);
-    out.innerHTML = `${msg ? `<p class="note">${esc(msg)}</p>` : ''}${excelRows.length ? `
+    const s1 = rows.filter(r => r.section === 1), s2 = rows.filter(r => r.section === 2);
+    const dateFmt = new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium' });
+    out.innerHTML = `${msg ? `<p class="note">${esc(msg)}</p>` : ''}${!kept ? '<p class="note">This browser cannot keep the list, so it is lost when the page is closed. Download the Excel files before closing.</p>' : ''}${rows.length ? `
       <div class="excel-acts">
         <button class="btn primary" type="button" data-csv="1" ${s1.length ? '' : 'disabled'}>Download Section 1 (${s1.length})</button>
         <button class="btn primary" type="button" data-csv="2" ${s2.length ? '' : 'disabled'}>Download Section 2 (${s2.length})</button>
-        <button class="btn ghost" type="button" id="clearRows">Clear list</button>
+        <button class="btn ghost" type="button" id="clearRows">Clear list…</button>
       </div>
       <div class="table-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Section</th><th>Customer</th><th>Consumer no.</th><th>Dealer</th></tr></thead><tbody>
-      ${excelRows.slice().sort((a, b) => b.createdAt - a.createdAt).map(r => `<tr><td>${esc(new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium' }).format(r.createdAt))}</td><td>${r.section}${r.mode ? ` · ${r.mode === 'loan' ? 'Loan' : 'Cash'}` : ''}</td><td>${esc(r.fields.name)}</td><td class="mono">${esc(r.fields.consumer)}</td><td>${esc(r.dealer.name)}</td></tr>`).join('')}
+      ${rows.slice().sort((a, b) => b.createdAt - a.createdAt).map(r => `<tr><td>${esc(dateFmt.format(r.createdAt))}</td><td>${r.section}${r.mode ? ` · ${r.mode === 'loan' ? 'Loan' : 'Cash'}` : ''}</td><td>${esc(r.fields.name)}</td><td class="mono">${esc(r.fields.consumer)}</td><td>${esc(r.dealer && r.dealer.name)}</td></tr>`).join('')}
       </tbody></table></div>` : ''}`;
   };
-  drawOut();
+  store.listOffice().then(r => { rows = r; drawOut(); }).catch(() => { kept = false; drawOut(); });
+
   const take = async files => {
-    const { rows, skipped } = await readPdfFiles(files);
-    const known = new Set(excelRows.map(r => r.ref + r.createdAt));
-    const fresh = rows.filter(r => !known.has(r.ref + r.createdAt));
-    excelRows.push(...fresh);
-    const dupes = rows.length - fresh.length;
-    drawOut(`${fresh.length} PDF${fresh.length === 1 ? '' : 's'} added.${dupes ? ` ${dupes} already in the list.` : ''}${skipped.length ? ` ${skipped.length} file${skipped.length > 1 ? 's were' : ' was'} not from this app: ${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? '…' : ''}.` : ''}`);
+    const { rows: got, skipped } = await readPdfFiles(files);
+    const byRef = new Map(rows.map(r => [r.ref, r]));
+    const changed = [];
+    let added = 0, replaced = 0, same = 0;
+    for (const r of got) {
+      const old = byRef.get(r.ref);
+      if (old && old.createdAt >= r.createdAt) { same++; continue; } // this PDF, or an older copy of it
+      if (old) replaced++; else added++;
+      byRef.set(r.ref, r);
+      changed.push(r);
+    }
+    rows = [...byRef.values()];
+    if (kept) await store.putOffice(changed).catch(() => { kept = false; });
+    const msg = [
+      added || !(replaced || same) ? `${plural(added, 'PDF', 'PDFs')} added.` : '',
+      replaced ? `${plural(replaced, 'PDF was a newer copy of a form already in the list, so it replaced the older one.', 'PDFs were newer copies of forms already in the list, so they replaced the older ones.')}` : '',
+      same ? `${plural(same, 'was', 'were')} already in the list.` : '',
+      skipped.length ? `${plural(skipped.length, 'file was', 'files were')} not from this app: ${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? '…' : ''}.` : ''
+    ].filter(Boolean).join(' ');
+    drawOut(msg);
   };
   $('#pdfFiles').addEventListener('change', e => { take([...e.target.files]); e.target.value = ''; });
   const drop = $('#drop');
   drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
   drop.addEventListener('dragleave', () => drop.classList.remove('over'));
   drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); take([...e.dataTransfer.files]); });
-  out.onclick = e => {
+  out.onclick = async e => {
     const c = e.target.closest('[data-csv]');
-    if (c) downloadCsv(Number(c.dataset.csv), excelRows.filter(r => r.section === Number(c.dataset.csv)));
-    if (e.target.closest('#clearRows')) { excelRows = []; drawOut(); }
+    if (c) downloadCsv(Number(c.dataset.csv), rows.filter(r => r.section === Number(c.dataset.csv)));
+    if (e.target.closest('#clearRows')) {
+      if (!await confirmBox('Clear the list?', `All ${rows.length} rows are removed from this device. The PDFs themselves are not touched. Download the Excel files first if you still need them.`, 'Clear list', true)) return;
+      await store.clearOffice().catch(() => {});
+      rows = [];
+      drawOut('The list is cleared.');
+    }
   };
 }
 
@@ -852,7 +880,17 @@ render();
 if (session) {
   api('me').then(r => { setSession({ token: r.token, user: r.user }); }).catch(() => { /* offline: keep working */ });
   store.cleanUp();
+  store.keepStorage();
 }
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+  // A new release is fetched in the background. Switch to it when nothing is being typed or made,
+  // so a form is never lost; otherwise it is used the next time the app opens.
+  const hadWorker = !!navigator.serviceWorker.controller;
+  let updateReady = false;
+  const idle = () => !$('.modal-back') && !['form', 'done'].includes(route()[0])
+    && !$$('input, textarea').some(i => i.type !== 'file' && i.value);
+  const reloadIfIdle = () => { if (updateReady && document.visibilityState === 'visible' && idle()) location.reload(); };
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadWorker) { updateReady = true; reloadIfIdle(); } });
+  document.addEventListener('visibilitychange', reloadIfIdle);
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
