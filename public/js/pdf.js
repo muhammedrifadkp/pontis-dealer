@@ -4,11 +4,11 @@
 
 import { isPhoto, display, SECTIONS } from './fields.js';
 import { getPhoto } from './store.js';
-import { fmtCoord, fmtWhen } from './media.js';
+import { fmtCoord, fmtWhen, gpsSource } from './media.js';
 
 const W = 595.28, H = 841.89, M = 40;
 const NAVY = [0.157, 0.298, 0.384], BLUE = [0.184, 0.525, 0.722], SAGE = [0.494, 0.616, 0.341];
-const GREY = [0.36, 0.40, 0.45], LINE = [0.84, 0.87, 0.90], TINT = [0.933, 0.957, 0.973], INK = [0.12, 0.14, 0.18];
+const RED = [0.706, 0.137, 0.094], GREY = [0.36, 0.40, 0.45], LINE = [0.84, 0.87, 0.90], TINT = [0.933, 0.957, 0.973], INK = [0.12, 0.14, 0.18];
 
 // Helvetica and Helvetica-Bold character widths (1/1000 em) for codes 32–126
 const HV = [278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584];
@@ -219,7 +219,11 @@ export async function buildClientPdf(d) {
     page.text(M, M + 22, meta, 9, { color: GREY });
     let top = M + 34;
     if (ph.gps) {
-      page.text(M, top + 4, `GPS: ${fmtCoord(ph.gps.lat, 'N', 'S')}, ${fmtCoord(ph.gps.lng, 'E', 'W')} (±${Math.round(ph.gps.acc)} m) · ${fmtWhen(ph.gps.at)}`, 8.5, { color: SAGE, bold: true });
+      const src = gpsSource(ph.gps);
+      page.text(M, top + 4, `GPS: ${fmtCoord(ph.gps.lat, 'N', 'S')}, ${fmtCoord(ph.gps.lng, 'E', 'W')}${ph.gps.acc != null ? ` (±${Math.round(ph.gps.acc)} m)` : ''} · ${fmtWhen(ph.gps.at)}${src ? ` · ${src}` : ''}`, 8.5, { color: SAGE, bold: true });
+      top += 12;
+    } else if (ph.noGps) {
+      page.text(M, top + 4, 'No GPS: the photo had no location saved in it, and the device location was not available.', 8.5, { color: RED, bold: true });
       top += 12;
     }
     page.rect(M, top, W - 2 * M, 1, LINE);

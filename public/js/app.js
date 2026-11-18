@@ -4,7 +4,7 @@
 
 import { SECTIONS, activeFields, needsCoApplicant, check, note, tidy, display, isPhoto, normMobile } from './fields.js';
 import * as store from './store.js';
-import { preparePhoto, getPosition, fmtCoord } from './media.js';
+import { preparePhoto, getPosition, readExifGps, fmtCoord } from './media.js';
 import { buildClientPdf } from './pdf.js';
 import { readPdfFiles, downloadCsv } from './office.js';
 
@@ -447,7 +447,7 @@ async function formView(id) {
     const list = d.values[f.key] || [];
     Promise.all(list.map(p => store.getPhoto(p.pid).then(b => ({ p, b })))).then(items => {
       ul.innerHTML = items.map(({ p, b }, i) => `<li><img src="${b ? photoUrl(p.pid, b) : ''}" alt="${esc(f.label)} ${i + 1}" width="${p.w}" height="${p.h}">
-        ${p.gps ? '<span class="gps-badge">GPS</span>' : ''}
+        ${p.gps ? '<span class="gps-badge">GPS</span>' : p.noGps ? '<span class="gps-badge none">No GPS</span>' : ''}
         <button type="button" class="x" data-remove="${f.key}" data-i="${i}" aria-label="Remove ${esc(f.label)} ${i + 1}">×</button></li>`).join('');
     });
     const lbl = $(`[data-photo="${f.key}"]`, form).parentElement.querySelector('[data-addlabel]');
@@ -522,6 +522,7 @@ async function formView(id) {
       const f = fieldByKey[rm.dataset.remove], i = Number(rm.dataset.i);
       const [gone] = d.values[f.key].splice(i, 1);
       if (gone) { store.deletePhotos([gone.pid]); const u = urls.get(gone.pid); if (u) { URL.revokeObjectURL(u); urls.delete(gone.pid); } }
+      const st = $(`[data-status="${f.key}"]`, form); if (st) { st.textContent = ''; st.classList.remove('warn'); }
       save(); renderThumbs(f); refresh(); showError(f);
       $(`[data-photo="${f.key}"]`, form).focus();
     }
@@ -535,12 +536,22 @@ async function formView(id) {
     const status = $(`[data-status="${f.key}"]`, form);
     const max = f.type === 'photos' ? (f.max || 60) : 1;
     try {
-      let gps = null;
+      // GPS photos: the location saved in the photo itself (where it was taken) comes first. Without it,
+      // this device's location is used. A computer often has neither: the photo is then still added,
+      // marked "No GPS" here and in the PDF, so the office can see it.
+      let gps = null, noGps = '';
       if (f.type === 'gpsphoto') {
-        status.textContent = 'Getting the GPS location…';
-        let pos = gpsWait ? await gpsWait : null;
-        if (!pos || pos instanceof Error) pos = await getPosition();
-        gps = pos;
+        status.textContent = 'Reading the photo’s location…';
+        const exif = await readExifGps(files[0]);
+        if (exif) {
+          gps = { lat: exif.lat, lng: exif.lng, acc: null, at: exif.at || files[0].lastModified || Date.now(), source: 'photo' };
+        } else {
+          status.textContent = 'Getting the GPS location…';
+          let pos = gpsWait ? await gpsWait : null;
+          if (!pos || pos instanceof Error) pos = await getPosition().catch(err => err);
+          if (pos instanceof Error) noGps = pos.message;
+          else gps = { ...pos, at: Date.now(), source: 'device', late: Date.now() - (files[0].lastModified || Date.now()) > 10 * 60 * 1000 };
+        }
         gpsWait = null;
       }
       const room = max - (f.type === 'photos' ? (d.values[f.key] || []).length : 0);
@@ -549,10 +560,12 @@ async function formView(id) {
       const added = [];
       for (let i = 0; i < take.length; i++) {
         status.textContent = take.length > 1 ? `Preparing photo ${i + 1} of ${take.length}…` : 'Preparing the photo…';
-        const stamp = gps ? { ...gps, at: Date.now(), label: f.label.replace(/^GPS photo of /i, '').replace(/^./, c => c.toUpperCase()) } : null;
+        const stamp = gps ? { ...gps, label: f.label.replace(/^GPS photo of /i, '').replace(/^./, c => c.toUpperCase()) } : null;
         const ph = await preparePhoto(take[i], stamp);
         const pid = await store.savePhoto(ph.blob);
-        added.push({ pid, w: ph.w, h: ph.h, at: Date.now(), ...(gps ? { gps: { lat: gps.lat, lng: gps.lng, acc: gps.acc, at: stamp.at } } : {}) });
+        added.push({ pid, w: ph.w, h: ph.h, at: Date.now(),
+          ...(gps ? { gps: { lat: gps.lat, lng: gps.lng, acc: gps.acc, at: gps.at, source: gps.source, late: !!gps.late } } : {}),
+          ...(f.type === 'gpsphoto' && !gps ? { noGps: true } : {}) });
       }
       if (f.type === 'photos') d.values[f.key] = [...(d.values[f.key] || []), ...added];
       else {
@@ -560,13 +573,19 @@ async function formView(id) {
         if (old.length) store.deletePhotos(old.map(p => p.pid));
         d.values[f.key] = added.slice(0, 1);
       }
-      status.textContent = gps && gps.acc > 100 ? `Added. The GPS was only accurate to ${Math.round(gps.acc)} m.` : '';
+      status.classList.toggle('warn', !!noGps);
+      status.textContent = noGps
+        ? `Added without a location (marked “No GPS” in the PDF). This photo has no GPS data saved in it, and ${/turned off/.test(noGps) ? 'location is turned off for this app' : 'this device could not find its location'}. For a GPS photo, take it with the phone camera at the site, with location on.`
+        : gps && gps.source === 'photo' ? 'Added, with the location saved in the photo.'
+        : gps && gps.acc > 100 ? `Added. The GPS was only accurate to ${Math.round(gps.acc)} m.` : '';
       touched.add(f.key);
       await store.saveDraft(d);
       renderThumbs(f); refresh(); showError(f);
     } catch (err) {
       status.textContent = '';
-      toast(err && err.message === 'jpeg' ? 'This phone could not prepare the photo. Please update the phone’s software or use another phone.' : (err.message || 'Could not add the photo.'), 'bad');
+      toast(err && err.message === 'jpeg' ? 'This phone could not prepare the photo. Please update the phone’s software or use another phone.'
+        : err && err.message === 'image' ? 'This photo could not be opened. Use a JPG or PNG photo (iPhone HEIC photos may not open on a computer).'
+        : (err && err.message) || 'Could not add the photo.', 'bad');
     }
   });
 

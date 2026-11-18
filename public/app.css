@@ -140,6 +140,8 @@ fieldset.co legend{font:600 16px var(--head);color:var(--sage-d);padding:0 6px}
 .thumbs .x{position:absolute;top:4px;right:4px;width:32px;height:32px;border-radius:50%;border:0;background:rgba(16,32,44,.72);color:#fff;font-size:20px;line-height:1;cursor:pointer}
 .thumbs .x::before{content:"";position:absolute;inset:-6px}
 .gps-badge{position:absolute;left:5px;bottom:5px;background:var(--sage);color:#fff;font:600 11px/1 var(--head);letter-spacing:.06em;padding:4px 6px;border-radius:5px}
+.gps-badge.none{background:var(--bad)}
+.photo-status.warn{color:var(--bad)}
 .add-photo{position:relative;width:100%;border-style:dashed;border-color:#A9C0D0;color:var(--blue-d);background:#F8FBFD}
 .photos.gps .add-photo{border-color:var(--sage);color:var(--sage-d);background:#F7FAF3}
 .photo-status{font-size:13px;color:var(--blue-d);font-weight:600;margin-top:6px}
