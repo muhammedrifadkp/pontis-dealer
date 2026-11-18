@@ -34,6 +34,7 @@ export const SECTION_1 = [
   { key: 'bankDoc', label: 'Bank document photo', type: 'photo' },
   { key: 'landmark', label: 'Landmark', type: 'text', required: false, placeholder: 'Near …' },
   { key: 'email', label: 'Email ID', type: 'email' },
+  { key: 'signature', label: 'Customer signature photo', type: 'photo', hint: 'The customer signs on white paper; take a clear photo of the signature' },
   { key: 'roofPhoto', label: 'GPS photo of the rooftop', type: 'gpsphoto', hint: 'Take it with the phone camera at the site (location on). The location and time are printed on it' }
 ];
 
