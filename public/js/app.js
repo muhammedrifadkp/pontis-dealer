@@ -575,7 +575,7 @@ async function formView(id) {
       }
       status.classList.toggle('warn', !!noGps);
       status.textContent = noGps
-        ? `Added without a location (marked “No GPS” in the PDF). This photo has no GPS data saved in it, and ${/turned off/.test(noGps) ? 'location is turned off for this app' : 'this device could not find its location'}. For a GPS photo, take it with the phone camera at the site, with location on.`
+        ? 'No location found: marked “No GPS”.'
         : gps && gps.source === 'photo' ? 'Added, with the location saved in the photo.'
         : gps && gps.acc > 100 ? `Added. The GPS was only accurate to ${Math.round(gps.acc)} m.` : '';
       touched.add(f.key);
