@@ -14,9 +14,9 @@ export async function readPdfFiles(files) {
 }
 
 // Long numbers (Aadhaar, consumer, serials) are written so Excel keeps every digit
-const cell = v => {
+const cell = (v, preserveDigits = true) => {
   const s = String(v ?? '');
-  const t = /^\d{6,}$/.test(s) ? `="${s}"` : s;
+  const t = preserveDigits && /^\d{6,}$/.test(s) ? `="${s}"` : s;
   return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
 };
 
@@ -24,12 +24,14 @@ export function downloadCsv(section, rows) {
   const fields = SECTIONS[section].fields.filter(f => !isPhoto(f));
   const head = ['Date', 'Ref', 'Dealer', 'Dealer mobile', ...(section === 1 ? ['Cash / Loan'] : []), ...fields.map(f => f.label)];
   const fmt = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
-  const lines = rows.slice().sort((a, b) => a.createdAt - b.createdAt).map(r => [
-    fmt.format(r.createdAt), r.ref, r.dealer && r.dealer.name, r.dealer && r.dealer.phone,
-    ...(section === 1 ? [r.mode === 'loan' ? 'Loan' : r.mode === 'cash' ? 'Cash' : ''] : []),
-    ...fields.map(f => r.fields[f.key] ?? '')
-  ]);
-  const csv = '﻿' + [head, ...lines].map(l => l.map(cell).join(',')).join('\r\n');
+  const lines = rows.slice().sort((a, b) => a.createdAt - b.createdAt).map(r => {
+    const details = [
+      fmt.format(r.createdAt), r.ref, r.dealer && r.dealer.name, r.dealer && r.dealer.phone,
+      ...(section === 1 ? [r.mode === 'loan' ? 'Loan' : r.mode === 'cash' ? 'Cash' : ''] : [])
+    ];
+    return [...details.map(v => cell(v)), ...fields.map(f => cell(r.fields[f.key], f.type !== 'decimal'))].join(',');
+  });
+  const csv = '﻿' + [head.map(v => cell(v)).join(','), ...lines].join('\r\n');
   const stamp = new Date().toISOString().slice(0, 10);
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));

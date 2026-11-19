@@ -1,6 +1,6 @@
 // The two client forms and their checks. To add or change a field, edit SECTION_1 / SECTION_2 below.
 //
-// Field types: text, consumer, mobile, aadhaar, pan, email, age, number, select, serial,
+// Field types: text, consumer, mobile, aadhaar, pan, email, age, number, decimal, select, serial,
 //              photo (one), photos (several), gpsphoto (camera only, stamped with GPS), location, serials
 // Options:     required (default true), only: 'loan' | 'cash', group: 'co' (co-applicant, loan and age 60+)
 
@@ -9,6 +9,10 @@ export const INVERTER_BRANDS = ['Waaree', 'Havells', 'Deye', 'Other'];
 
 export const SECTION_1 = [
   { key: 'name', label: 'Customer name', type: 'text', placeholder: 'As on the Aadhaar card' },
+  { key: 'quotationAmount', label: 'Customer quotation amount (₹)', type: 'decimal' },
+  { key: 'loanAmount', label: 'Loan amount required (₹)', type: 'decimal', only: 'loan' },
+  { key: 'advanceAmount', label: 'Advance amount received (₹)', type: 'decimal', allowZero: true, hint: 'Enter 0 if no advance was received' },
+  { key: 'systemCapacity', label: 'System capacity (kW)', type: 'decimal', decimalPlaces: 3, placeholder: 'e.g. 3.42' },
   { key: 'consumer', label: 'Consumer number', type: 'consumer', hint: 'From the KSEB bill, usually 13 digits' },
   { key: 'ksebBill', label: 'KSEB bill photo', type: 'photo' },
   { key: 'mobile', label: 'Registered mobile number', type: 'mobile', hint: 'The number registered with KSEB' },
@@ -104,6 +108,7 @@ export function tidy(f, raw) {
     case 'aadhaar': return digitsOnly(s).slice(0, 12);
     case 'pan': return s.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
     case 'age': case 'number': return digitsOnly(s).slice(0, 4);
+    case 'decimal': return s.trim();
     case 'email': return s.trim().toLowerCase();
     case 'serial': return s.toUpperCase().replace(/\s+/g, '').slice(0, 40);
     default: return s.replace(/\s+/g, ' ').trim();
@@ -157,6 +162,13 @@ export function check(f, values) {
     case 'email': return /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(s) ? '' : 'Enter a full email ID, like name@gmail.com.';
     case 'age': { const n = Number(s); return n >= 18 && n <= 110 ? '' : 'Enter the age in years (18 or more).'; }
     case 'number': { const n = Number(s); return n >= (f.min ?? 0) && n <= (f.max ?? 1e9) ? '' : `Enter a number from ${f.min} to ${f.max}.`; }
+    case 'decimal': {
+      const places = f.decimalPlaces ?? 2;
+      const format = new RegExp(`^\\d+(?:\\.\\d{1,${places}})?$`);
+      const n = Number(s);
+      if (!format.test(s) || !Number.isFinite(n)) return `Enter a number with up to ${places} decimal places.`;
+      return n > 0 || f.allowZero ? '' : 'Enter a number greater than 0.';
+    }
     case 'serial': return s.length >= 4 ? '' : 'The serial number looks too short.';
     case 'select': return f.options.includes(s) ? '' : 'Choose one.';
     default: return '';

@@ -329,6 +329,7 @@ function fieldHtml(f, v) {
     case 'pan': body = input('text', 'autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCDE1234F…" class="upper"'); break;
     case 'email': body = input('email', 'inputmode="email" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="name@gmail.com…"'); break;
     case 'age': case 'number': body = input('text', 'inputmode="numeric" autocomplete="off"'); break;
+    case 'decimal': body = input('text', 'inputmode="decimal" autocomplete="off"'); break;
     case 'serial': body = input('text', 'autocomplete="off" autocapitalize="characters" spellcheck="false" class="upper mono"'); break;
     case 'select':
       body = `<select id="${id}" name="${f.key}" aria-describedby="${describedBy}"><option value="">Choose…</option>${f.options.map(o => `<option${o === val ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
