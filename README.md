@@ -1,14 +1,15 @@
 # Pontis Energy dealer app
 
 Dealers fill a checked form for each client and send it to Pontis Energy as one PDF on WhatsApp.
-The Pontis office (admin) adds dealers and sends them their login on WhatsApp, and turns the received PDFs into an Excel list.
+The Pontis office (admin) adds dealers and sends them their login on WhatsApp, and adds the received PDFs to the **Clients** tab to see each client and save their photos.
 
 - **One login screen.** The admin number and password come from the settings below; dealers are kept in a Cloudflare D1 database.
 - **Client details never reach the server.** They stay on the dealer's phone (IndexedDB) until the PDF is sent, then **Done** removes them. Unfinished forms are removed 30 days after they were last opened; the home screen warns in the last week.
 - **Section 1 (work start)**: Cash or Loan. Loan with age 60+ asks for a co-applicant. **Section 2 (after installation)**: panels (one serial box per panel, duplicates caught), inverter, energy meter.
 - **Checks**: required fields, 10-digit mobile, Aadhaar 12 digits with its check digit, PAN format, email, consumer number (warns when not 13 digits).
 - **GPS photos** (rooftop; panels with customer) can come from the camera, the gallery or a computer. The location and time printed on the photo come from the GPS saved in the photo itself (phone camera with location on, or a GPS camera app); without it, from the device's location when the photo is added (marked "location when added" if the photo is older than 10 minutes). If neither is available (often on a computer), the photo is still added but marked **No GPS** on the screen and in the PDF.
-- **PDF** is made on the phone: a details table, then one page per photo. The typed details are also stored inside the PDF (`/PontisData`), which the admin's **Excel** tab reads to make a CSV per section.
+- **PDF** is made on the phone: a details table, then one page per photo. The typed details are also stored inside the PDF (`/PontisData`).
+- **Clients tab (admin)**: add the PDFs dealers send (choose or drop many at once). Forms are grouped by consumer number, so Section 1 and Section 2 of a client show together, with "Section 2 pending" for those not installed yet. A client's page shows the details and every photo, taken out of the PDF unchanged: **Save** one photo, or **Save all** (one ZIP on a computer; the share sheet on a phone, to save them to the gallery). The PDFs are kept on that device (IndexedDB) until removed. The Excel (CSV) lists per section are still at the bottom of the tab.
 - Fields are listed in `public/js/fields.js`; change them there.
 - Logins: 10 wrong passwords lock that number for 5 minutes on that connection only, so nobody can lock the office out by typing wrong passwords for its number. 50 wrong passwords for one number within 15 minutes, from anywhere, lock it for 15 minutes. A login lasts 30 days and is renewed while the app is used. Blocking, deleting or resetting a dealer logs them out.
 
@@ -21,7 +22,7 @@ public/            the app (static files, installable, works offline)
   js/pdf.js        PDF writer
   js/media.js      photo resize and GPS stamp
   js/store.js      drafts and photos on the phone
-  js/office.js     Excel (CSV) from PDFs
+  js/office.js     Clients tab: reads PDFs, takes photos out, ZIP, Excel (CSV)
 functions/api/     Cloudflare Pages Functions entry (/api/*)
 lib/server.js      logins, sessions, dealers (D1)
 ```

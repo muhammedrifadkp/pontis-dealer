@@ -1,7 +1,8 @@
 // Kept on the dealer's phone only: unfinished forms (drafts) with their photos, and a short list of
 // clients already sent (name, consumer number and mobile only) to fill Section 2 quickly.
 // Drafts are deleted after the PDF is sent ("Done") or DRAFT_DAYS after they were last changed.
-// On the office's device: the Excel list read from received PDFs (the "office" store).
+// On the office's device: the client list read from received PDFs ("office"), and the PDFs themselves
+// ("officePdfs"), so their photos can be seen and saved later.
 
 const DB_NAME = 'pontis-dealer';
 export const DRAFT_DAYS = 30;
@@ -10,12 +11,13 @@ let dbp = null;
 function openDb() {
   if (!dbp) {
     dbp = new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 2);
+      const req = indexedDB.open(DB_NAME, 3);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains('drafts')) db.createObjectStore('drafts', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('photos')) db.createObjectStore('photos', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('office')) db.createObjectStore('office', { keyPath: 'ref' });
+        if (!db.objectStoreNames.contains('officePdfs')) db.createObjectStore('officePdfs', { keyPath: 'ref' });
       };
       req.onsuccess = () => {
         const db = req.result;
@@ -91,13 +93,23 @@ export async function keepStorage() {
   try { if (navigator.storage && navigator.storage.persist && !(await navigator.storage.persisted())) await navigator.storage.persist(); } catch (e) { /* not supported */ }
 }
 
-// ---------- office: the Excel list, one row per PDF (Ref) ----------
+// ---------- office: the client list, one row per PDF (Ref) ----------
 export const listOffice = () => tx('office', 'readonly', s => reqP(s.getAll())).then(r => r || []);
 export async function putOffice(rows) {
   if (!rows.length) return;
   await tx('office', 'readwrite', s => { rows.forEach(r => s.put(r)); });
 }
-export const clearOffice = () => tx('office', 'readwrite', s => s.clear());
+export async function clearOffice() {
+  await tx('office', 'readwrite', s => s.clear());
+  await tx('officePdfs', 'readwrite', s => s.clear());
+}
+export async function deleteOffice(refs) {
+  await tx('office', 'readwrite', s => { refs.forEach(r => s.delete(r)); });
+  await tx('officePdfs', 'readwrite', s => { refs.forEach(r => s.delete(r)); });
+}
+export const putOfficePdf = (ref, blob) => tx('officePdfs', 'readwrite', s => s.put({ ref, blob }));
+export const getOfficePdf = ref => tx('officePdfs', 'readonly', s => reqP(s.get(ref))).then(r => r ? r.blob : null);
+export const officePdfRefs = () => tx('officePdfs', 'readonly', s => reqP(s.getAllKeys())).then(k => new Set(k || []));
 
 // ---------- clients already sent (for Section 2) ----------
 const recentKey = owner => `pontis-recent-${owner}`;

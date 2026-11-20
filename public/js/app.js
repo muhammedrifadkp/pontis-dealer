@@ -6,7 +6,7 @@ import { SECTIONS, activeFields, needsCoApplicant, check, note, tidy, display, i
 import * as store from './store.js';
 import { preparePhoto, getPosition, readExifGps, fmtCoord } from './media.js';
 import { buildClientPdf } from './pdf.js';
-import { readPdfFiles, downloadCsv } from './office.js';
+import { readPdfFiles, downloadCsv, groupClients, clientKey, extractPhotos, savePhotos, fileName } from './office.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -150,7 +150,8 @@ function render() {
   const [view, arg] = route();
   if (!session) { document.title = 'Log in – Pontis Energy'; return loginView(); }
   if (session.user.role === 'admin') {
-    if (view === 'excel') return excelView();
+    if (view === 'client' && arg) return clientView(decodeURIComponent(arg));
+    if (view === 'clients' || view === 'excel') return clientsView();
     return dealersView();
   }
   if (view === 'form' && arg) return formView(arg);
@@ -685,7 +686,7 @@ async function doneView(id) {
 // ---------- admin: dealers ----------
 let dealerCache = [];
 function adminTabs(active) {
-  return `<nav class="tabs" aria-label="Admin"><a href="#/" ${active === 'dealers' ? 'aria-current="page"' : ''}>Dealers</a><a href="#/excel" ${active === 'excel' ? 'aria-current="page"' : ''}>Excel</a></nav>`;
+  return `<nav class="tabs" aria-label="Admin"><a href="#/" ${active === 'dealers' ? 'aria-current="page"' : ''}>Dealers</a><a href="#/clients" ${active === 'clients' ? 'aria-current="page"' : ''}>Clients</a></nav>`;
 }
 async function dealersView() {
   document.title = 'Dealers – Pontis Energy';
@@ -822,72 +823,232 @@ function showLogin(dealer, password, isReset) {
   $('[data-close]', m).onclick = closeModal;
 }
 
-// ---------- admin: Excel from PDFs ----------
-// The list is kept on this device, so PDFs can be added day by day and downloaded together.
+// ---------- admin: clients (from the PDFs dealers send) ----------
+// The office saves the PDFs from WhatsApp and adds them here. Each PDF's details are read from it,
+// and the PDF is kept on this device, so its photos can be seen and saved later.
 // One row per form (its Ref): a PDF made again after "Change details" replaces the older copy.
-function excelView() {
-  document.title = 'Excel from PDFs – Pontis Energy';
-  app.innerHTML = `${topBar(adminTabs('excel'))}<main class="wrap wide" id="main">
-    <h1>Excel from PDFs</h1>
-    <p class="muted">Save the PDFs dealers send on WhatsApp, then choose them here (or drop them on this box). The details are read straight from the PDFs, so nothing is retyped. The list stays on this device until you clear it.</p>
-    <label class="drop" id="drop"><input class="vh" type="file" accept="application/pdf,.pdf" multiple id="pdfFiles">${ICON.file}<b>Choose PDFs</b><span class="muted small">or drop them here</span></label>
-    <div id="excelOut" aria-live="polite"><p class="muted">Loading…</p></div>
-  </main>`;
-  const out = $('#excelOut');
-  let rows = [], kept = true;
-  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-  const drawOut = (msg = '') => {
-    const s1 = rows.filter(r => r.section === 1), s2 = rows.filter(r => r.section === 2);
-    const dateFmt = new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium' });
-    out.innerHTML = `${msg ? `<p class="note">${esc(msg)}</p>` : ''}${!kept ? '<p class="note">This browser cannot keep the list, so it is lost when the page is closed. Download the Excel files before closing.</p>' : ''}${rows.length ? `
-      <div class="excel-acts">
-        <button class="btn primary" type="button" data-csv="1" ${s1.length ? '' : 'disabled'}>Download Section 1 (${s1.length})</button>
-        <button class="btn primary" type="button" data-csv="2" ${s2.length ? '' : 'disabled'}>Download Section 2 (${s2.length})</button>
-        <button class="btn ghost" type="button" id="clearRows">Clear list…</button>
-      </div>
-      <div class="table-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Section</th><th>Customer</th><th>Consumer no.</th><th>Dealer</th></tr></thead><tbody>
-      ${rows.slice().sort((a, b) => b.createdAt - a.createdAt).map(r => `<tr><td>${esc(dateFmt.format(r.createdAt))}</td><td>${r.section}${r.mode ? ` · ${r.mode === 'loan' ? 'Loan' : 'Cash'}` : ''}</td><td>${esc(r.fields.name)}</td><td class="mono">${esc(r.fields.consumer)}</td><td>${esc(r.dealer && r.dealer.name)}</td></tr>`).join('')}
-      </tbody></table></div>` : ''}`;
-  };
-  store.listOffice().then(r => { rows = r; drawOut(); }).catch(() => { kept = false; drawOut(); });
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const modeLabel = m => (m === 'loan' ? 'Loan' : m === 'cash' ? 'Cash' : '');
+const dayFmt = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
+const timeFmt = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
 
-  const take = async files => {
-    const { rows: got, skipped } = await readPdfFiles(files);
-    const byRef = new Map(rows.map(r => [r.ref, r]));
-    const changed = [];
-    let added = 0, replaced = 0, same = 0;
-    for (const r of got) {
-      const old = byRef.get(r.ref);
-      if (old && old.createdAt >= r.createdAt) { same++; continue; } // this PDF, or an older copy of it
-      if (old) replaced++; else added++;
-      byRef.set(r.ref, r);
-      changed.push(r);
+async function addPdfs(files) {
+  const rows = await store.listOffice();
+  const { rows: got, skipped } = await readPdfFiles(files);
+  const byRef = new Map(rows.map(r => [r.ref, r]));
+  const changed = [], pdfs = [];
+  let added = 0, replaced = 0, same = 0;
+  for (const { file, ...row } of got) {
+    const old = byRef.get(row.ref);
+    if (old && old.createdAt > row.createdAt) { same++; continue; } // an older copy of a form in the list
+    if (old && old.createdAt === row.createdAt) { same++; pdfs.push([row.ref, file]); continue; } // the same PDF: keep the file
+    if (old) replaced++; else added++;
+    byRef.set(row.ref, row);
+    changed.push(row);
+    pdfs.push([row.ref, file]);
+  }
+  await store.putOffice(changed);
+  for (const [ref, f] of pdfs) await store.putOfficePdf(ref, f);
+  const msg = [
+    added || !(replaced || same) ? `${plural(added, 'PDF', 'PDFs')} added.` : '',
+    replaced ? (replaced === 1 ? '1 PDF was a newer copy of a form already here, so it replaced the older one.' : `${replaced} PDFs were newer copies of forms already here, so they replaced the older ones.`) : '',
+    same ? `${plural(same, 'PDF was', 'PDFs were')} already here.` : '',
+    skipped.length ? `${plural(skipped.length, 'file was', 'files were')} not from this app: ${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? '…' : ''}.` : ''
+  ].filter(Boolean).join(' ');
+  return { msg, got };
+}
+const addError = err => (err && err.name === 'QuotaExceededError'
+  ? 'This device is out of space for more PDFs. Remove old clients, then try again.'
+  : 'This browser could not keep the PDFs. Open the app in Chrome, Edge or Safari, not in a private window.');
+
+// Dropping PDFs anywhere on the page adds them
+function pdfDrop(el, onFiles) {
+  el.addEventListener('dragover', e => { if ([...e.dataTransfer.types].includes('Files')) { e.preventDefault(); el.classList.add('over'); } });
+  el.addEventListener('dragleave', e => { if (!el.contains(e.relatedTarget)) el.classList.remove('over'); });
+  el.addEventListener('drop', e => { e.preventDefault(); el.classList.remove('over'); onFiles([...e.dataTransfer.files]); });
+}
+const addPdfButton = (label = 'Add PDFs', cls = 'primary') =>
+  `<label class="btn ${cls}">${ICON.plus}${esc(label)}<input class="vh" type="file" accept="application/pdf,.pdf" multiple data-addpdf></label>`;
+
+const clientsState = { q: '', show: '', scroll: 0 };
+function clientsView() {
+  document.title = 'Clients – Pontis Energy';
+  app.innerHTML = `${topBar(adminTabs('clients'))}<main class="wrap wide drop-page" id="main">
+    <div class="head-row"><h1>Clients</h1>${addPdfButton()}</div>
+    <p class="muted small intro">Save the PDFs dealers send on WhatsApp, then add them here or drop them on this page. Each client’s details and photos are kept on this device.</p>
+    <div id="addMsg" aria-live="polite"></div>
+    <div id="clientsOut"><p class="muted">Loading…</p></div>
+  </main>`;
+  const out = $('#clientsOut'), main = $('#main');
+  let rows = [], pdfRefs = new Set();
+
+  const draw = () => {
+    if (!rows.length) {
+      out.innerHTML = `<div class="empty card"><h2>No clients yet</h2>
+        <p class="muted">Add the PDFs dealers send on WhatsApp. You can choose many at once.</p>
+        <div class="empty-acts">${addPdfButton('Choose PDFs')}</div></div>`;
+      return;
     }
-    rows = [...byRef.values()];
-    if (kept) await store.putOffice(changed).catch(() => { kept = false; });
-    const msg = [
-      added || !(replaced || same) ? `${plural(added, 'PDF', 'PDFs')} added.` : '',
-      replaced ? `${plural(replaced, 'PDF was a newer copy of a form already in the list, so it replaced the older one.', 'PDFs were newer copies of forms already in the list, so they replaced the older ones.')}` : '',
-      same ? `${plural(same, 'was', 'were')} already in the list.` : '',
-      skipped.length ? `${plural(skipped.length, 'file was', 'files were')} not from this app: ${skipped.slice(0, 3).join(', ')}${skipped.length > 3 ? '…' : ''}.` : ''
-    ].filter(Boolean).join(' ');
-    drawOut(msg);
+    const clients = groupClients(rows);
+    const waiting = clients.filter(c => !c.s2).length;
+    out.innerHTML = `<div class="toolbar">
+        <input type="search" id="q" value="${esc(clientsState.q)}" placeholder="Search name, consumer or mobile…" aria-label="Search clients" autocomplete="off">
+        <select id="show" aria-label="Show">
+          <option value="">All clients (${clients.length})</option>
+          <option value="s2"${clientsState.show === 's2' ? ' selected' : ''}>Waiting for Section 2 (${waiting})</option>
+          <option value="done"${clientsState.show === 'done' ? ' selected' : ''}>Installation done (${clients.length - waiting})</option>
+        </select>
+        <span class="muted small" id="count" aria-live="polite"></span></div>
+      <ul class="clients" id="clientList"></ul>
+      <div class="foot-acts">
+        <span class="muted small">Excel lists:</span>
+        <button class="btn sm" type="button" data-csv="1"${rows.some(r => r.section === 1) ? '' : ' disabled'}>Section 1 (${rows.filter(r => r.section === 1).length})</button>
+        <button class="btn sm" type="button" data-csv="2"${rows.some(r => r.section === 2) ? '' : ' disabled'}>Section 2 (${rows.filter(r => r.section === 2).length})</button>
+        <button class="btn sm ghost danger-text" type="button" id="clearAll">Remove all clients…</button>
+      </div>`;
+    const list = $('#clientList'), q = $('#q'), show = $('#show');
+    const drawList = () => {
+      const term = q.value.trim().toLowerCase(), digits = term.replace(/\D/g, '');
+      const items = clients.filter(c => (clientsState.show === 's2' ? !c.s2 : clientsState.show === 'done' ? !!c.s2 : true)
+        && (!term || `${c.name} ${c.dealer.name || ''}`.toLowerCase().includes(term)
+          || (digits.length >= 3 && `${c.consumer} ${c.mobile.replace(/\D/g, '')}`.includes(digits))));
+      $('#count').textContent = items.length === clients.length ? '' : `${items.length} of ${clients.length}`;
+      list.innerHTML = items.length ? items.map(c => {
+        const noPdf = c.rows.some(r => !pdfRefs.has(r.ref));
+        return `<li><a class="client card" href="#/client/${encodeURIComponent(c.key)}">
+          <span class="client-main"><b>${esc(c.name)}</b>
+            <span class="muted small">${c.consumer ? `Consumer <span class="mono">${esc(c.consumer)}</span>` : 'No consumer number'}${c.mobile ? ` · ${esc(c.mobile)}` : ''}</span>
+            <span class="muted small">Dealer: ${esc(c.dealer.name || '—')}</span></span>
+          <span class="client-status">
+            ${c.s1 ? `<span class="pill info">S1 · ${esc(modeLabel(c.s1.mode) || 'Work start')} · ${esc(dayFmt.format(c.s1.createdAt))}</span>` : '<span class="pill off">No Section 1</span>'}
+            ${c.s2 ? `<span class="pill ok">${ICON.check} S2 · ${esc(dayFmt.format(c.s2.createdAt))}</span>` : '<span class="pill wait">Section 2 pending</span>'}
+            ${noPdf ? '<span class="pill off">No photos on this device</span>' : ''}
+          </span></a></li>`;
+      }).join('') : `<li class="muted">No client matches${q.value ? ` “${esc(q.value)}”` : ''}.</li>`;
+    };
+    q.addEventListener('input', () => { clientsState.q = q.value; drawList(); });
+    show.addEventListener('change', () => { clientsState.show = show.value; drawList(); });
+    drawList();
   };
-  $('#pdfFiles').addEventListener('change', e => { take([...e.target.files]); e.target.value = ''; });
-  const drop = $('#drop');
-  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
-  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
-  drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); take([...e.dataTransfer.files]); });
-  out.onclick = async e => {
+
+  const load = async (msg = '') => {
+    try { [rows, pdfRefs] = await Promise.all([store.listOffice(), store.officePdfRefs()]); }
+    catch (e) { $('#addMsg').innerHTML = `<p class="note bad">${esc(addError(e))}</p>`; rows = []; }
+    if (msg) $('#addMsg').innerHTML = `<p class="note">${esc(msg)}</p>`;
+    draw();
+  };
+  const take = async files => {
+    if (!files.length) return;
+    $('#addMsg').innerHTML = '<p class="note">Reading the PDFs…</p>';
+    try { const r = await addPdfs(files); await load(r.msg); }
+    catch (e) { $('#addMsg').innerHTML = `<p class="note bad">${esc(addError(e))}</p>`; }
+  };
+  main.addEventListener('change', e => { if (e.target.matches('[data-addpdf]')) { take([...e.target.files]); e.target.value = ''; } });
+  pdfDrop(main, take);
+  main.addEventListener('click', async e => {
     const c = e.target.closest('[data-csv]');
     if (c) downloadCsv(Number(c.dataset.csv), rows.filter(r => r.section === Number(c.dataset.csv)));
-    if (e.target.closest('#clearRows')) {
-      if (!await confirmBox('Clear the list?', `All ${rows.length} rows are removed from this device. The PDFs themselves are not touched. Download the Excel files first if you still need them.`, 'Clear list', true)) return;
+    if (e.target.closest('#clearAll')) {
+      if (!await confirmBox('Remove all clients?', `All ${plural(rows.length, 'form', 'forms')} and their PDFs are removed from this device. The PDFs in WhatsApp are not touched. Download the Excel lists first if you still need them.`, 'Remove all', true)) return;
       await store.clearOffice().catch(() => {});
-      rows = [];
-      drawOut('The list is cleared.');
+      load('All clients are removed from this device.');
     }
+  });
+  load().then(() => window.scrollTo(0, clientsState.scroll));
+  current = () => { clientsState.scroll = window.scrollY; };
+}
+
+async function clientView(key) {
+  const rows = (await store.listOffice().catch(() => [])).filter(r => clientKey(r) === key);
+  if (!rows.length) { go('#/clients'); return; }
+  const c = groupClients(rows)[0];
+  document.title = `${c.name} – Pontis Energy`;
+  const urls = [];
+  const url = b => { const u = URL.createObjectURL(b); urls.push(u); return u; };
+  current = () => urls.forEach(u => URL.revokeObjectURL(u));
+  const base = fileName(`${c.name}${c.consumer ? ` - ${c.consumer}` : ''}`);
+
+  const valueHtml = v => /^https?:\/\/\S+/.test(v)
+    ? `<a href="${esc(v.split(' ')[0])}" target="_blank" rel="noopener">${esc(v)}</a>` : esc(v || '—');
+  app.innerHTML = `${topBar(adminTabs('clients'))}<main class="wrap" id="main">
+    <a class="back-link" href="#/clients">${ICON.back} All clients</a>
+    <h1 class="client-name">${esc(c.name)}</h1>
+    <p class="muted">${c.consumer ? `Consumer <span class="mono">${esc(c.consumer)}</span>` : ''}${c.mobile ? ` · ${esc(c.mobile)}` : ''} · Dealer: ${esc(c.dealer.name || '—')}${c.dealer.phone ? ` (${esc(c.dealer.phone)})` : ''}</p>
+    ${c.s2 ? '' : '<p class="note">Section 2 (after installation) has not come in yet.</p>'}
+    ${c.rows.map(r => {
+      const sec = SECTIONS[r.section];
+      const fields = sec.fields.filter(f => !isPhoto(f) && f.key in r.fields);
+      return `<section class="card form-card" data-ref="${esc(r.ref)}" aria-labelledby="h-${esc(r.ref)}">
+        <div class="form-card-head">
+          <h2 id="h-${esc(r.ref)}"><span class="tag${r.section === 2 ? ' sage' : ''}">${esc(sec.title)}</span> ${esc(sec.subtitle)}${r.mode ? ` · ${esc(modeLabel(r.mode))}` : ''}</h2>
+          <span class="muted small">Received ${esc(timeFmt.format(r.createdAt))} · Ref <span class="mono">${esc(r.ref)}</span></span>
+        </div>
+        <details class="fields-box"${r.section === 1 && c.rows.length > 1 ? '' : ' open'}><summary>Details (${fields.length})</summary>
+          <dl class="details">${fields.map(f => `<div><dt>${esc(f.label)}</dt><dd>${valueHtml(r.fields[f.key])}</dd></div>`).join('')}</dl></details>
+        <h3 class="photos-h">Photos</h3>
+        <div class="photos-out" data-photos><p class="muted small">Loading photos…</p></div>
+        <div class="card-acts"><span data-pdflink></span>
+          <button class="btn sm ghost danger-text" type="button" data-remove>Remove this form…</button></div>
+      </section>`;
+    }).join('')}
+  </main>`;
+
+  const photos = new Map(); // ref -> photos taken out of that PDF
+  const fillPhotos = async r => {
+    const box = $(`[data-ref="${CSS.escape(r.ref)}"]`);
+    const out = $('[data-photos]', box);
+    const pdf = await store.getOfficePdf(r.ref).catch(() => null);
+    if (!pdf) {
+      out.innerHTML = `<p class="note">The PDF for this form is not on this device (it was added before photos were kept). Add the same PDF again to see its photos.</p>${addPdfButton('Add this PDF', '')}`;
+      return;
+    }
+    $('[data-pdflink]', box).innerHTML = `<a class="btn sm" href="${url(pdf)}" target="_blank" rel="noopener">${ICON.file} Open PDF</a>`;
+    const list = await extractPhotos(pdf).catch(() => []);
+    photos.set(r.ref, list);
+    out.innerHTML = list.length ? `<div class="photo-acts"><button class="btn primary sm" type="button" data-saveall>Save all ${list.length} photos</button></div>
+      <ul class="pgrid">${list.map((p, i) => `<li>
+        <a class="pthumb" href="${url(p.blob)}" target="_blank" rel="noopener" aria-label="Open ${esc(p.label)}"><img src="${urls[urls.length - 1]}" alt="" width="${p.w}" height="${p.h}" loading="lazy"></a>
+        <span class="plabel">${esc(p.label)}</span>
+        <button class="btn sm" type="button" data-save="${i}" aria-label="Save ${esc(p.label)}">Save</button></li>`).join('')}</ul>`
+      : '<p class="muted small">This PDF has no photos.</p>';
   };
+  c.rows.forEach(fillPhotos);
+
+  const main = $('#main');
+  const reAdd = async files => {
+    try { const r = await addPdfs(files); toast(r.msg); render(); }
+    catch (e) { toast(addError(e), 'bad'); }
+  };
+  main.addEventListener('change', e => { if (e.target.matches('[data-addpdf]')) { reAdd([...e.target.files]); e.target.value = ''; } });
+  pdfDrop(main, reAdd);
+  main.addEventListener('click', async e => {
+    const box = e.target.closest('[data-ref]'); if (!box) return;
+    const r = c.rows.find(x => x.ref === box.dataset.ref), list = photos.get(r.ref) || [];
+    const sec = `Section ${r.section}`;
+    const save = e.target.closest('[data-save]');
+    if (save) {
+      const p = list[Number(save.dataset.save)];
+      busy(save, true);
+      await savePhotos([{ name: `${base} - ${fileName(p.label)}.jpg`, blob: p.blob }], '').catch(() => toast('Could not save the photo.', 'bad'));
+      busy(save, false);
+    }
+    const all = e.target.closest('[data-saveall]');
+    if (all) {
+      busy(all, true);
+      const pad = n => String(n).padStart(2, '0');
+      const files = list.map((p, i) => ({ name: `${pad(i + 1)} ${fileName(p.label)}.jpg`, blob: p.blob }));
+      const how = await savePhotos(files, `${base} - ${sec} photos.zip`).catch(() => 'failed');
+      busy(all, false);
+      if (how === 'downloaded') toast(`${list.length} photos saved as one ZIP file.`, 'good');
+      if (how === 'failed') toast('Could not save the photos.', 'bad');
+    }
+    if (e.target.closest('[data-remove]')) {
+      if (!await confirmBox(`Remove this ${sec} form?`, `${c.name}’s ${sec} form and its PDF are removed from this device. The PDF in WhatsApp is not touched.`, 'Remove', true)) return;
+      await store.deleteOffice([r.ref]).catch(() => {});
+      toast('Removed.');
+      if (c.rows.length > 1) render(); else go('#/clients');
+    }
+  });
 }
 
 // ---------- start ----------
