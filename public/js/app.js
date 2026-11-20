@@ -6,7 +6,7 @@ import { SECTIONS, activeFields, needsCoApplicant, check, note, tidy, display, i
 import * as store from './store.js';
 import { preparePhoto, getPosition, readExifGps, fmtCoord } from './media.js';
 import { buildClientPdf } from './pdf.js';
-import { readPdfFiles, downloadCsv, groupClients, clientKey, extractPhotos, savePhotos, fileName } from './office.js';
+import { readPdfFiles, groupClients, clientKey, extractPhotos, savePhotos, fileName, download } from './office.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -30,7 +30,12 @@ const ICON = {
   check: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
   wa: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l1.3-3.9A8 8 0 1 1 8 19z"/><path d="M9 9.5c.3 2 2.5 4.3 5 5l1.2-1.3 2 1-.5 1.7c-3.8.4-8.2-3.8-8.2-7.6L10.2 7.8l1 2z"/></svg>',
   plus: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
-  file: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4"/></svg>'
+  file: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6v18h12V7z"/><path d="M14 3v4h4"/></svg>',
+  trash: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
+  copy: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>',
+  phone: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/></svg>',
+  next: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>',
+  save: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>'
 };
 
 // ---------- session ----------
@@ -80,12 +85,12 @@ function busy(btn, on) {
   btn.setAttribute('aria-busy', on ? 'true' : 'false');
 }
 let lastFocus = null;
-function openModal(html, { onClose } = {}) {
+function openModal(html, { onClose, cls = '' } = {}) {
   closeModal();
   lastFocus = document.activeElement;
   const back = document.createElement('div');
   back.className = 'modal-back';
-  back.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">${html}</div>`;
+  back.innerHTML = `<div class="modal${cls ? ` ${cls}` : ''}" role="dialog" aria-modal="true" aria-labelledby="mTitle">${html}</div>`;
   document.body.appendChild(back);
   document.body.classList.add('modal-open');
   back.addEventListener('mousedown', e => { if (e.target === back) closeModal(); });
@@ -139,7 +144,8 @@ document.addEventListener('click', async e => {
 });
 
 // ---------- routing: the address shows the screen, so Back works ----------
-const route = () => location.hash.replace(/^#\/?/, '').split('/');
+const route = () => location.hash.replace(/^#\/?/, '').split('?')[0].split('/');
+const routeQuery = () => new URLSearchParams(location.hash.split('?')[1] || '');
 window.addEventListener('hashchange', () => render());
 function go(hash) { if (location.hash === hash) render(); else location.hash = hash; }
 
@@ -151,7 +157,7 @@ function render() {
   if (!session) { document.title = 'Log in – Pontis Energy'; return loginView(); }
   if (session.user.role === 'admin') {
     if (view === 'client' && arg) return clientView(decodeURIComponent(arg));
-    if (view === 'clients' || view === 'excel') return clientsView();
+    if (view === 'clients' || view === 'excel') return clientsView(); // "excel": the old address of this tab
     return dealersView();
   }
   if (view === 'form' && arg) return formView(arg);
@@ -697,6 +703,13 @@ async function dealersView() {
     <ul class="dealers" id="dealerList"><li class="muted">Loading…</li></ul>
   </main>`;
   const listEl = $('#dealerList'), q = $('#q');
+  // how many clients each dealer has in the Clients tab (from the PDFs kept on this device)
+  let sent = new Map();
+  store.listOffice().then(rows => {
+    sent = new Map();
+    groupClients(rows).forEach(c => { const k = String(c.dealer.phone || '').replace(/\D/g, ''); sent.set(k, (sent.get(k) || 0) + 1); });
+    if (dealerCache.length) draw();
+  }).catch(() => {});
   const draw = () => {
     const term = q.value.trim().toLowerCase();
     const items = dealerCache.filter(x => !term || `${x.name} ${x.phone} ${x.area}`.toLowerCase().includes(term));
@@ -712,6 +725,7 @@ async function dealersView() {
         ${x.notes ? `<span class="muted small clamp">${esc(x.notes)}</span>` : ''}</div>
       <span class="pill ${x.active ? 'ok' : 'off'}">${x.active ? 'Active' : 'Blocked'}</span>
       <div class="dealer-acts">
+        ${sent.get(x.phone) ? `<a class="btn sm" href="#/clients?dealer=${esc(x.phone)}">Clients (${sent.get(x.phone)})</a>` : ''}
         <button class="btn sm" type="button" data-act="edit" data-id="${x.id}">Edit…</button>
         <button class="btn sm" type="button" data-act="reset" data-id="${x.id}">Reset password…</button>
         <button class="btn sm" type="button" data-act="toggle" data-id="${x.id}">${x.active ? 'Block…' : 'Unblock'}</button>
@@ -825,12 +839,14 @@ function showLogin(dealer, password, isReset) {
 
 // ---------- admin: clients (from the PDFs dealers send) ----------
 // The office saves the PDFs from WhatsApp and adds them here. Each PDF's details are read from it,
-// and the PDF is kept on this device, so its photos can be seen and saved later.
+// and the PDF is kept on this device, so it can be opened and its photos saved later.
 // One row per form (its Ref): a PDF made again after "Change details" replaces the older copy.
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const modeLabel = m => (m === 'loan' ? 'Loan' : m === 'cash' ? 'Cash' : '');
 const dayFmt = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' });
 const timeFmt = new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'Asia/Kolkata' });
+const digits = s => String(s || '').replace(/\D/g, '');
+const dealerKey = d => digits(d && d.phone) || (d && d.name) || '';
 
 async function addPdfs(files) {
   const rows = await store.listOffice();
@@ -858,7 +874,7 @@ async function addPdfs(files) {
   return { msg, got };
 }
 const addError = err => (err && err.name === 'QuotaExceededError'
-  ? 'This device is out of space for more PDFs. Remove old clients, then try again.'
+  ? 'This device is out of space for more PDFs. Delete old clients, then try again.'
   : 'This browser could not keep the PDFs. Open the app in Chrome, Edge or Safari, not in a private window.');
 
 // Dropping PDFs anywhere on the page adds them
@@ -870,71 +886,137 @@ function pdfDrop(el, onFiles) {
 const addPdfButton = (label = 'Add PDFs', cls = 'primary') =>
   `<label class="btn ${cls}">${ICON.plus}${esc(label)}<input class="vh" type="file" accept="application/pdf,.pdf" multiple data-addpdf></label>`;
 
-const clientsState = { q: '', show: '', scroll: 0 };
+// Opens a kept PDF in a new tab (the tab is opened at the tap, so the browser does not block it)
+async function openPdf(ref, name) {
+  const w = window.open('', '_blank');
+  const blob = await store.getOfficePdf(ref).catch(() => null);
+  if (!blob) { if (w) w.close(); toast('This PDF is not on this device. Add it again from WhatsApp.', 'bad'); return; }
+  const u = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }));
+  if (w) w.location.href = u; else download(blob, name);
+  setTimeout(() => URL.revokeObjectURL(u), 120000);
+}
+const pdfName = (c, r) => `${fileName(`${c.name}${c.consumer ? ` - ${c.consumer}` : ''} - Section ${r.section}`)}.pdf`;
+
+async function deleteClients(clients) {
+  const n = clients.length, forms = clients.reduce((a, c) => a + c.rows.length, 0);
+  const who = n === 1 ? clients[0].name : plural(n, 'client', 'clients');
+  if (!await confirmBox(`Delete ${who}?`, `${plural(forms, 'form', 'forms')} and ${forms === 1 ? 'its PDF and photos are' : 'their PDFs and photos are'} removed from this device. This cannot be undone here, but the PDFs stay in WhatsApp and can be added again.`, 'Delete', true)) return false;
+  await store.deleteOffice(clients.flatMap(c => c.rows.map(r => r.ref))).catch(() => {});
+  toast(`${n === 1 ? clients[0].name : plural(n, 'client', 'clients')} deleted.`);
+  return true;
+}
+
 function clientsView() {
   document.title = 'Clients – Pontis Energy';
+  const qp = routeQuery();
+  clientsView.query = qp.toString() ? `?${qp}` : '';
+  const st = { q: qp.get('q') || '', dealer: qp.get('dealer') || '', status: qp.get('status') || '', type: qp.get('type') || '', sort: qp.get('sort') || 'new' };
+  const selected = new Set();
   app.innerHTML = `${topBar(adminTabs('clients'))}<main class="wrap wide drop-page" id="main">
     <div class="head-row"><h1>Clients</h1>${addPdfButton()}</div>
-    <p class="muted small intro">Save the PDFs dealers send on WhatsApp, then add them here or drop them on this page. Each client’s details and photos are kept on this device.</p>
+    <p class="muted small intro">Save the PDFs dealers send on WhatsApp, then add them here or drop them on this page.</p>
     <div id="addMsg" aria-live="polite"></div>
     <div id="clientsOut"><p class="muted">Loading…</p></div>
   </main>`;
   const out = $('#clientsOut'), main = $('#main');
-  let rows = [], pdfRefs = new Set();
+  let rows = [], pdfRefs = new Set(), clients = [], shown = [];
+
+  // the filters are kept in the address, so Back and a saved link return to the same list
+  const saveState = () => {
+    const p = new URLSearchParams();
+    if (st.q) p.set('q', st.q);
+    if (st.dealer) p.set('dealer', st.dealer);
+    if (st.status) p.set('status', st.status);
+    if (st.type) p.set('type', st.type);
+    if (st.sort !== 'new') p.set('sort', st.sort);
+    clientsView.query = p.toString() ? `?${p}` : '';
+    history.replaceState(null, '', `#/clients${clientsView.query}`);
+  };
 
   const draw = () => {
-    if (!rows.length) {
+    clients = groupClients(rows);
+    if (!clients.length) {
       out.innerHTML = `<div class="empty card"><h2>No clients yet</h2>
         <p class="muted">Add the PDFs dealers send on WhatsApp. You can choose many at once.</p>
         <div class="empty-acts">${addPdfButton('Choose PDFs')}</div></div>`;
       return;
     }
-    const clients = groupClients(rows);
+    const dealers = new Map();
+    clients.forEach(c => { const k = dealerKey(c.dealer); const d = dealers.get(k) || { name: c.dealer.name || 'Unknown', n: 0 }; d.n++; dealers.set(k, d); });
+    if (st.dealer && !dealers.has(st.dealer)) st.dealer = '';
     const waiting = clients.filter(c => !c.s2).length;
-    out.innerHTML = `<div class="toolbar">
-        <input type="search" id="q" value="${esc(clientsState.q)}" placeholder="Search name, consumer or mobile…" aria-label="Search clients" autocomplete="off">
-        <select id="show" aria-label="Show">
-          <option value="">All clients (${clients.length})</option>
-          <option value="s2"${clientsState.show === 's2' ? ' selected' : ''}>Waiting for Section 2 (${waiting})</option>
-          <option value="done"${clientsState.show === 'done' ? ' selected' : ''}>Installation done (${clients.length - waiting})</option>
-        </select>
-        <span class="muted small" id="count" aria-live="polite"></span></div>
+    out.innerHTML = `
+      <div class="stats" role="group" aria-label="Show">
+        <button type="button" class="stat" data-status="" aria-pressed="${!st.status}"><b>${clients.length}</b><span>All clients</span></button>
+        <button type="button" class="stat wait" data-status="s2" aria-pressed="${st.status === 's2'}"><b>${waiting}</b><span>Waiting for Section 2</span></button>
+        <button type="button" class="stat ok" data-status="done" aria-pressed="${st.status === 'done'}"><b>${clients.length - waiting}</b><span>Installed</span></button>
+      </div>
+      <div class="filters">
+        <input type="search" id="q" value="${esc(st.q)}" placeholder="Search name, consumer, mobile or Ref…" aria-label="Search clients" autocomplete="off" spellcheck="false">
+        <select id="fDealer" aria-label="Dealer"><option value="">All dealers</option>${[...dealers].sort((a, b) => a[1].name.localeCompare(b[1].name)).map(([k, d]) => `<option value="${esc(k)}"${k === st.dealer ? ' selected' : ''}>${esc(d.name)} (${d.n})</option>`).join('')}</select>
+        <select id="fType" aria-label="Cash or loan"><option value="">Cash &amp; loan</option><option value="cash"${st.type === 'cash' ? ' selected' : ''}>Cash</option><option value="loan"${st.type === 'loan' ? ' selected' : ''}>Loan</option></select>
+        <select id="fSort" aria-label="Sort"><option value="new">Newest first</option><option value="old"${st.sort === 'old' ? ' selected' : ''}>Oldest first</option><option value="name"${st.sort === 'name' ? ' selected' : ''}>Name A–Z</option><option value="dealer"${st.sort === 'dealer' ? ' selected' : ''}>By dealer</option></select>
+      </div>
+      <div class="result-row"><span class="muted small" id="count" aria-live="polite"></span><button class="link small" type="button" id="clearF" hidden>Clear filters</button></div>
+      <div class="select-bar" id="selBar" hidden><span id="selCount"></span>
+        <button class="btn sm danger" type="button" id="delSel">${ICON.trash} Delete…</button>
+        <button class="btn sm ghost" type="button" id="selNone">Cancel</button></div>
       <ul class="clients" id="clientList"></ul>
-      <div class="foot-acts">
-        <span class="muted small">Excel lists:</span>
-        <button class="btn sm" type="button" data-csv="1"${rows.some(r => r.section === 1) ? '' : ' disabled'}>Section 1 (${rows.filter(r => r.section === 1).length})</button>
-        <button class="btn sm" type="button" data-csv="2"${rows.some(r => r.section === 2) ? '' : ' disabled'}>Section 2 (${rows.filter(r => r.section === 2).length})</button>
-        <button class="btn sm ghost danger-text" type="button" id="clearAll">Remove all clients…</button>
-      </div>`;
-    const list = $('#clientList'), q = $('#q'), show = $('#show');
-    const drawList = () => {
-      const term = q.value.trim().toLowerCase(), digits = term.replace(/\D/g, '');
-      const items = clients.filter(c => (clientsState.show === 's2' ? !c.s2 : clientsState.show === 'done' ? !!c.s2 : true)
-        && (!term || `${c.name} ${c.dealer.name || ''}`.toLowerCase().includes(term)
-          || (digits.length >= 3 && `${c.consumer} ${c.mobile.replace(/\D/g, '')}`.includes(digits))));
-      $('#count').textContent = items.length === clients.length ? '' : `${items.length} of ${clients.length}`;
-      list.innerHTML = items.length ? items.map(c => {
-        const noPdf = c.rows.some(r => !pdfRefs.has(r.ref));
-        return `<li><a class="client card" href="#/client/${encodeURIComponent(c.key)}">
-          <span class="client-main"><b>${esc(c.name)}</b>
-            <span class="muted small">${c.consumer ? `Consumer <span class="mono">${esc(c.consumer)}</span>` : 'No consumer number'}${c.mobile ? ` · ${esc(c.mobile)}` : ''}</span>
-            <span class="muted small">Dealer: ${esc(c.dealer.name || '—')}</span></span>
+      <p class="muted small storage" id="storage"></p>`;
+    $('#q').addEventListener('input', e => { st.q = e.target.value; saveState(); drawList(); });
+    [['#fDealer', 'dealer'], ['#fType', 'type'], ['#fSort', 'sort']].forEach(([sel, k]) => $(sel).addEventListener('change', e => { st[k] = e.target.value; saveState(); drawList(); }));
+    drawList();
+    if (navigator.storage && navigator.storage.estimate) navigator.storage.estimate().then(e => {
+      const el = $('#storage'); if (el && e.usage) el.textContent = `${plural(pdfRefs.size, 'PDF', 'PDFs')} kept on this device · ${new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(e.usage / 1048576)} MB used`;
+    }).catch(() => {});
+  };
+
+  const drawList = () => {
+    const term = st.q.trim().toLowerCase(), num = digits(term);
+    shown = clients.filter(c => (st.status === 's2' ? !c.s2 : st.status === 'done' ? !!c.s2 : true)
+      && (!st.dealer || dealerKey(c.dealer) === st.dealer)
+      && (!st.type || (c.s1 && c.s1.mode === st.type))
+      && (!term || `${c.name} ${c.dealer.name || ''} ${c.rows.map(r => r.ref).join(' ')}`.toLowerCase().includes(term)
+        || (num.length >= 3 && `${c.consumer} ${digits(c.mobile)}`.includes(num))));
+    const by = { new: (a, b) => b.latest - a.latest, old: (a, b) => a.latest - b.latest, name: (a, b) => a.name.localeCompare(b.name), dealer: (a, b) => (a.dealer.name || '').localeCompare(b.dealer.name || '') || b.latest - a.latest };
+    shown.sort(by[st.sort] || by.new);
+    $$('.stat').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.status === st.status)));
+    const filtered = !!(st.q || st.dealer || st.status || st.type);
+    $('#count').textContent = filtered ? `Showing ${shown.length} of ${plural(clients.length, 'client', 'clients')}` : plural(clients.length, 'client', 'clients');
+    $('#clearF').hidden = !filtered;
+    $('#clientList').innerHTML = shown.length ? shown.map(c => {
+      const forms = [c.s1, c.s2].filter(Boolean);
+      const missing = c.rows.some(r => !pdfRefs.has(r.ref));
+      return `<li class="client card${selected.has(c.key) ? ' picked' : ''}">
+        <label class="pick"><input type="checkbox" data-pick="${esc(c.key)}"${selected.has(c.key) ? ' checked' : ''}><span class="vh">Select ${esc(c.name)}</span></label>
+        <a class="client-link" href="#/client/${encodeURIComponent(c.key)}">
+          <b>${esc(c.name)}</b>
+          <span class="muted small">${c.consumer ? `Consumer <span class="mono">${esc(c.consumer)}</span>` : 'No consumer number'}${c.mobile ? ` · ${esc(c.mobile)}` : ''}</span>
+          <span class="muted small">Dealer: ${esc(c.dealer.name || '—')}</span>
           <span class="client-status">
             ${c.s1 ? `<span class="pill info">S1 · ${esc(modeLabel(c.s1.mode) || 'Work start')} · ${esc(dayFmt.format(c.s1.createdAt))}</span>` : '<span class="pill off">No Section 1</span>'}
             ${c.s2 ? `<span class="pill ok">${ICON.check} S2 · ${esc(dayFmt.format(c.s2.createdAt))}</span>` : '<span class="pill wait">Section 2 pending</span>'}
-            ${noPdf ? '<span class="pill off">No photos on this device</span>' : ''}
-          </span></a></li>`;
-      }).join('') : `<li class="muted">No client matches${q.value ? ` “${esc(q.value)}”` : ''}.</li>`;
-    };
-    q.addEventListener('input', () => { clientsState.q = q.value; drawList(); });
-    show.addEventListener('change', () => { clientsState.show = show.value; drawList(); });
-    drawList();
+            ${missing ? '<span class="pill off">PDF not on this device</span>' : ''}
+          </span></a>
+        <div class="client-acts">
+          ${forms.map(r => `<button class="btn sm" type="button" data-open="${esc(r.ref)}" data-key="${esc(c.key)}"${pdfRefs.has(r.ref) ? '' : ' disabled'}>${ICON.file} S${r.section} PDF</button>`).join('')}
+          <button class="btn sm ghost danger-text icon-sm" type="button" data-del="${esc(c.key)}" aria-label="Delete ${esc(c.name)}" title="Delete">${ICON.trash}</button>
+        </div></li>`;
+    }).join('') : `<li class="empty card"><p class="muted">No client matches these filters.</p><button class="btn sm" type="button" data-clearf>Clear filters</button></li>`;
+    drawSel();
   };
+  const drawSel = () => {
+    const bar = $('#selBar'); if (!bar) return;
+    bar.hidden = !selected.size;
+    $('#selCount').textContent = `${selected.size} selected`;
+  };
+  const clearFilters = () => { Object.assign(st, { q: '', dealer: '', status: '', type: '' }); saveState(); draw(); };
 
   const load = async (msg = '') => {
     try { [rows, pdfRefs] = await Promise.all([store.listOffice(), store.officePdfRefs()]); }
     catch (e) { $('#addMsg').innerHTML = `<p class="note bad">${esc(addError(e))}</p>`; rows = []; }
     if (msg) $('#addMsg').innerHTML = `<p class="note">${esc(msg)}</p>`;
+    selected.forEach(k => { if (!rows.some(r => clientKey(r) === k)) selected.delete(k); });
     draw();
   };
   const take = async files => {
@@ -943,19 +1025,29 @@ function clientsView() {
     try { const r = await addPdfs(files); await load(r.msg); }
     catch (e) { $('#addMsg').innerHTML = `<p class="note bad">${esc(addError(e))}</p>`; }
   };
-  main.addEventListener('change', e => { if (e.target.matches('[data-addpdf]')) { take([...e.target.files]); e.target.value = ''; } });
-  pdfDrop(main, take);
-  main.addEventListener('click', async e => {
-    const c = e.target.closest('[data-csv]');
-    if (c) downloadCsv(Number(c.dataset.csv), rows.filter(r => r.section === Number(c.dataset.csv)));
-    if (e.target.closest('#clearAll')) {
-      if (!await confirmBox('Remove all clients?', `All ${plural(rows.length, 'form', 'forms')} and their PDFs are removed from this device. The PDFs in WhatsApp are not touched. Download the Excel lists first if you still need them.`, 'Remove all', true)) return;
-      await store.clearOffice().catch(() => {});
-      load('All clients are removed from this device.');
+  main.addEventListener('change', e => {
+    if (e.target.matches('[data-addpdf]')) { take([...e.target.files]); e.target.value = ''; }
+    if (e.target.matches('[data-pick]')) {
+      const k = e.target.dataset.pick;
+      if (e.target.checked) selected.add(k); else selected.delete(k);
+      e.target.closest('.client').classList.toggle('picked', e.target.checked);
+      drawSel();
     }
   });
-  load().then(() => window.scrollTo(0, clientsState.scroll));
-  current = () => { clientsState.scroll = window.scrollY; };
+  pdfDrop(main, take);
+  main.addEventListener('click', async e => {
+    const stat = e.target.closest('[data-status]');
+    if (stat) { st.status = stat.dataset.status; saveState(); drawList(); return; }
+    if (e.target.closest('#clearF, [data-clearf]')) { clearFilters(); return; }
+    const op = e.target.closest('[data-open]');
+    if (op) { const c = clients.find(x => x.key === op.dataset.key), r = c.rows.find(x => x.ref === op.dataset.open); openPdf(r.ref, pdfName(c, r)); return; }
+    const del = e.target.closest('[data-del]');
+    if (del) { if (await deleteClients([clients.find(x => x.key === del.dataset.del)])) load(); return; }
+    if (e.target.closest('#selNone')) { selected.clear(); $$('[data-pick]').forEach(i => { i.checked = false; i.closest('.client').classList.remove('picked'); }); drawSel(); return; }
+    if (e.target.closest('#delSel')) { if (await deleteClients(clients.filter(c => selected.has(c.key)))) { selected.clear(); load(); } }
+  });
+  load().then(() => { if (clientsView.scroll) window.scrollTo(0, clientsView.scroll); });
+  current = () => { clientsView.scroll = window.scrollY; };
 }
 
 async function clientView(key) {
@@ -967,13 +1059,23 @@ async function clientView(key) {
   const url = b => { const u = URL.createObjectURL(b); urls.push(u); return u; };
   current = () => urls.forEach(u => URL.revokeObjectURL(u));
   const base = fileName(`${c.name}${c.consumer ? ` - ${c.consumer}` : ''}`);
+  const back = `#/clients${clientsView.query || ''}`;
+  const mobile = digits(c.mobile), dealerPhone = digits(c.dealer.phone);
 
   const valueHtml = v => /^https?:\/\/\S+/.test(v)
     ? `<a href="${esc(v.split(' ')[0])}" target="_blank" rel="noopener">${esc(v)}</a>` : esc(v || '—');
   app.innerHTML = `${topBar(adminTabs('clients'))}<main class="wrap" id="main">
-    <a class="back-link" href="#/clients">${ICON.back} All clients</a>
-    <h1 class="client-name">${esc(c.name)}</h1>
-    <p class="muted">${c.consumer ? `Consumer <span class="mono">${esc(c.consumer)}</span>` : ''}${c.mobile ? ` · ${esc(c.mobile)}` : ''} · Dealer: ${esc(c.dealer.name || '—')}${c.dealer.phone ? ` (${esc(c.dealer.phone)})` : ''}</p>
+    <a class="back-link" href="${esc(back)}">${ICON.back} All clients</a>
+    <div class="client-head">
+      <div class="client-title"><h1 class="client-name">${esc(c.name)}</h1>
+        <p class="muted">${c.consumer ? `Consumer <span class="mono">${esc(c.consumer)}</span>` : 'No consumer number'}${c.mobile ? ` · ${esc(c.mobile)}` : ''}</p>
+        <p class="muted small">Dealer: ${esc(c.dealer.name || '—')}${c.dealer.phone ? ` (${esc(c.dealer.phone)})` : ''}</p></div>
+      <div class="client-quick">
+        ${mobile.length === 10 ? `<a class="btn sm" href="tel:+91${mobile}">${ICON.phone} Call customer</a>` : ''}
+        ${dealerPhone.length === 10 ? `<a class="btn sm wa" href="https://wa.me/91${dealerPhone}" target="_blank" rel="noopener">${ICON.wa} WhatsApp dealer</a>` : ''}
+        <button class="btn sm ghost danger-text" type="button" data-delclient>${ICON.trash} Delete client…</button>
+      </div>
+    </div>
     ${c.s2 ? '' : '<p class="note">Section 2 (after installation) has not come in yet.</p>'}
     ${c.rows.map(r => {
       const sec = SECTIONS[r.section];
@@ -982,13 +1084,14 @@ async function clientView(key) {
         <div class="form-card-head">
           <h2 id="h-${esc(r.ref)}"><span class="tag${r.section === 2 ? ' sage' : ''}">${esc(sec.title)}</span> ${esc(sec.subtitle)}${r.mode ? ` · ${esc(modeLabel(r.mode))}` : ''}</h2>
           <span class="muted small">Received ${esc(timeFmt.format(r.createdAt))} · Ref <span class="mono">${esc(r.ref)}</span></span>
+          <div class="form-card-acts"><button class="btn sm" type="button" data-openpdf>${ICON.file} Open PDF</button>
+            <button class="btn sm" type="button" data-savepdf>${ICON.save} Save PDF</button></div>
         </div>
-        <details class="fields-box"${r.section === 1 && c.rows.length > 1 ? '' : ' open'}><summary>Details (${fields.length})</summary>
-          <dl class="details">${fields.map(f => `<div><dt>${esc(f.label)}</dt><dd>${valueHtml(r.fields[f.key])}</dd></div>`).join('')}</dl></details>
+        <details class="fields-box" open><summary>Details (${fields.length})</summary>
+          <dl class="details">${fields.map(f => `<div><dt>${esc(f.label)}</dt><dd><span>${valueHtml(r.fields[f.key])}</span>${r.fields[f.key] ? `<button class="copy" type="button" data-copy="${esc(r.fields[f.key])}" aria-label="Copy ${esc(f.label)}" title="Copy">${ICON.copy}</button>` : ''}</dd></div>`).join('')}</dl></details>
         <h3 class="photos-h">Photos</h3>
         <div class="photos-out" data-photos><p class="muted small">Loading photos…</p></div>
-        <div class="card-acts"><span data-pdflink></span>
-          <button class="btn sm ghost danger-text" type="button" data-remove>Remove this form…</button></div>
+        <div class="card-acts"><button class="btn sm ghost danger-text" type="button" data-remove>${ICON.trash} Delete this form…</button></div>
       </section>`;
     }).join('')}
   </main>`;
@@ -998,21 +1101,50 @@ async function clientView(key) {
     const box = $(`[data-ref="${CSS.escape(r.ref)}"]`);
     const out = $('[data-photos]', box);
     const pdf = await store.getOfficePdf(r.ref).catch(() => null);
+    $$('[data-openpdf], [data-savepdf]', box).forEach(b => { b.disabled = !pdf; });
     if (!pdf) {
-      out.innerHTML = `<p class="note">The PDF for this form is not on this device (it was added before photos were kept). Add the same PDF again to see its photos.</p>${addPdfButton('Add this PDF', '')}`;
+      out.innerHTML = `<p class="note">The PDF for this form is not on this device. Add the same PDF from WhatsApp to see its photos.</p>${addPdfButton('Add this PDF', '')}`;
       return;
     }
-    $('[data-pdflink]', box).innerHTML = `<a class="btn sm" href="${url(pdf)}" target="_blank" rel="noopener">${ICON.file} Open PDF</a>`;
     const list = await extractPhotos(pdf).catch(() => []);
+    list.forEach(p => { p.url = url(p.blob); });
     photos.set(r.ref, list);
-    out.innerHTML = list.length ? `<div class="photo-acts"><button class="btn primary sm" type="button" data-saveall>Save all ${list.length} photos</button></div>
+    out.innerHTML = list.length ? `<div class="photo-acts"><button class="btn primary sm" type="button" data-saveall>${ICON.save} Save all ${list.length} photos</button></div>
       <ul class="pgrid">${list.map((p, i) => `<li>
-        <a class="pthumb" href="${url(p.blob)}" target="_blank" rel="noopener" aria-label="Open ${esc(p.label)}"><img src="${urls[urls.length - 1]}" alt="" width="${p.w}" height="${p.h}" loading="lazy"></a>
+        <button class="pthumb" type="button" data-view="${i}" aria-label="View ${esc(p.label)}"><img src="${p.url}" alt="" width="${p.w}" height="${p.h}" loading="lazy"></button>
         <span class="plabel">${esc(p.label)}</span>
-        <button class="btn sm" type="button" data-save="${i}" aria-label="Save ${esc(p.label)}">Save</button></li>`).join('')}</ul>`
+        <button class="btn sm" type="button" data-save="${i}" aria-label="Save ${esc(p.label)}">${ICON.save} Save</button></li>`).join('')}</ul>`
       : '<p class="muted small">This PDF has no photos.</p>';
   };
   c.rows.forEach(fillPhotos);
+
+  const savePhoto = async p => {
+    await savePhotos([{ name: `${base} - ${fileName(p.label)}.jpg`, blob: p.blob }], '').catch(() => toast('Could not save the photo.', 'bad'));
+  };
+  // a large view of one photo, with Previous / Next (also the arrow keys) and Save
+  const viewer = (list, i) => {
+    const m = openModal(`<div class="lb-head"><h2 id="mTitle"></h2><span class="muted small" data-pos></span>
+        <button class="btn ghost icon" type="button" data-close aria-label="Close">×</button></div>
+      <div class="lb-img"><img alt=""></div>
+      <div class="lb-acts"><button class="btn" type="button" data-prev>${ICON.back} Previous</button>
+        <button class="btn primary" type="button" data-lbsave>${ICON.save} Save</button>
+        <button class="btn" type="button" data-next>Next ${ICON.next}</button></div>`, { cls: 'lightbox', onClose: () => document.removeEventListener('keydown', keys) });
+    const show = n => {
+      i = (n + list.length) % list.length;
+      $('#mTitle', m).textContent = list[i].label;
+      $('[data-pos]', m).textContent = `${i + 1} of ${list.length}`;
+      $('img', m).src = list[i].url; $('img', m).alt = list[i].label;
+      $('[data-prev]', m).disabled = $('[data-next]', m).disabled = list.length < 2;
+    };
+    const keys = e => { if (e.key === 'ArrowLeft') show(i - 1); if (e.key === 'ArrowRight') show(i + 1); };
+    document.addEventListener('keydown', keys);
+    $('[data-close]', m).onclick = closeModal;
+    $('[data-prev]', m).onclick = () => show(i - 1);
+    $('[data-next]', m).onclick = () => show(i + 1);
+    $('[data-lbsave]', m).onclick = () => savePhoto(list[i]);
+    show(i);
+    $('[data-lbsave]', m).focus();
+  };
 
   const main = $('#main');
   const reAdd = async files => {
@@ -1022,33 +1154,50 @@ async function clientView(key) {
   main.addEventListener('change', e => { if (e.target.matches('[data-addpdf]')) { reAdd([...e.target.files]); e.target.value = ''; } });
   pdfDrop(main, reAdd);
   main.addEventListener('click', async e => {
+    const cp = e.target.closest('[data-copy]');
+    if (cp) {
+      try { await navigator.clipboard.writeText(cp.dataset.copy); toast('Copied.', 'good'); } catch (err) { toast('Could not copy.', 'bad'); }
+      return;
+    }
+    if (e.target.closest('[data-delclient]')) { if (await deleteClients([c])) go(back); return; }
     const box = e.target.closest('[data-ref]'); if (!box) return;
     const r = c.rows.find(x => x.ref === box.dataset.ref), list = photos.get(r.ref) || [];
-    const sec = `Section ${r.section}`;
-    const save = e.target.closest('[data-save]');
-    if (save) {
-      const p = list[Number(save.dataset.save)];
-      busy(save, true);
-      await savePhotos([{ name: `${base} - ${fileName(p.label)}.jpg`, blob: p.blob }], '').catch(() => toast('Could not save the photo.', 'bad'));
-      busy(save, false);
+    if (e.target.closest('[data-openpdf]')) { openPdf(r.ref, pdfName(c, r)); return; }
+    if (e.target.closest('[data-savepdf]')) {
+      const blob = await store.getOfficePdf(r.ref).catch(() => null);
+      if (blob) await savePdfFile(blob, pdfName(c, r)); else toast('This PDF is not on this device.', 'bad');
+      return;
     }
+    const view = e.target.closest('[data-view]');
+    if (view) { viewer(list, Number(view.dataset.view)); return; }
+    const save = e.target.closest('[data-save]');
+    if (save) { busy(save, true); await savePhoto(list[Number(save.dataset.save)]); busy(save, false); return; }
     const all = e.target.closest('[data-saveall]');
     if (all) {
       busy(all, true);
       const pad = n => String(n).padStart(2, '0');
       const files = list.map((p, i) => ({ name: `${pad(i + 1)} ${fileName(p.label)}.jpg`, blob: p.blob }));
-      const how = await savePhotos(files, `${base} - ${sec} photos.zip`).catch(() => 'failed');
+      const how = await savePhotos(files, `${base} - Section ${r.section} photos.zip`).catch(() => 'failed');
       busy(all, false);
       if (how === 'downloaded') toast(`${list.length} photos saved as one ZIP file.`, 'good');
       if (how === 'failed') toast('Could not save the photos.', 'bad');
+      return;
     }
     if (e.target.closest('[data-remove]')) {
-      if (!await confirmBox(`Remove this ${sec} form?`, `${c.name}’s ${sec} form and its PDF are removed from this device. The PDF in WhatsApp is not touched.`, 'Remove', true)) return;
+      if (!await confirmBox(`Delete this Section ${r.section} form?`, `${c.name}’s Section ${r.section} form, its PDF and photos are removed from this device. The PDF stays in WhatsApp and can be added again.`, 'Delete', true)) return;
       await store.deleteOffice([r.ref]).catch(() => {});
-      toast('Removed.');
-      if (c.rows.length > 1) render(); else go('#/clients');
+      toast('Deleted.');
+      if (c.rows.length > 1) render(); else go(back);
     }
   });
+}
+// Saves a PDF: on a phone through the share sheet (to Files or another app), on a computer as a download
+async function savePdfFile(blob, name) {
+  const file = typeof File === 'function' ? new File([blob], name, { type: 'application/pdf' }) : null;
+  if (file && matchMedia('(pointer: coarse)').matches && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); return; } catch (err) { if (err && err.name === 'AbortError') return; }
+  }
+  download(blob, name);
 }
 
 // ---------- start ----------

@@ -1,6 +1,6 @@
 // Builds the client PDF on the phone: a details table (real text, so it stays small and sharp)
 // followed by one page per photo. The typed details are also stored inside the PDF (/PontisData),
-// so the office page can turn received PDFs into an Excel list without retyping.
+// so the Clients tab can list received PDFs without retyping.
 
 import { isPhoto, display, SECTIONS } from './fields.js';
 import { getPhoto } from './store.js';

@@ -1,7 +1,6 @@
-// Office side: reads the PDFs dealers send, groups them by client, takes the photos out of them,
-// and makes the Excel (CSV) lists.
+// Office side: reads the PDFs dealers send, groups them by client, and takes the photos out of them.
 
-import { SECTIONS, isPhoto } from './fields.js';
+import { SECTIONS } from './fields.js';
 import { readPdfData } from './pdf.js';
 
 // Reads the details stored in each PDF. Each row keeps its file, so the PDF can be kept too.
@@ -148,26 +147,4 @@ export async function savePhotos(files, zipName) {
   if (files.length === 1) download(files[0].blob, files[0].name);
   else download(await makeZip(files), zipName);
   return 'downloaded';
-}
-
-// ---------- Excel (CSV) ----------
-// Long numbers (Aadhaar, consumer, serials) are written so Excel keeps every digit, and text that
-// Excel would run as a formula (=, +, -, @) is kept as plain text.
-const cell = v => {
-  const s = String(v ?? '');
-  const t = /^\d{6,}$/.test(s) ? `="${s}"` : /^[=+\-@]/.test(s) ? `'${s}` : s;
-  return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
-};
-
-export function downloadCsv(section, rows) {
-  const fields = SECTIONS[section].fields.filter(f => !isPhoto(f));
-  const head = ['Date', 'Ref', 'Dealer', 'Dealer mobile', ...(section === 1 ? ['Cash / Loan'] : []), ...fields.map(f => f.label)];
-  const fmt = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
-  const lines = rows.slice().sort((a, b) => a.createdAt - b.createdAt).map(r => [
-    fmt.format(r.createdAt), r.ref, r.dealer && r.dealer.name, r.dealer && r.dealer.phone,
-    ...(section === 1 ? [r.mode === 'loan' ? 'Loan' : r.mode === 'cash' ? 'Cash' : ''] : []),
-    ...fields.map(f => r.fields[f.key] ?? '')
-  ]);
-  const csv = '﻿' + [head, ...lines].map(l => l.map(cell).join(',')).join('\r\n');
-  download(new Blob([csv], { type: 'text/csv;charset=utf-8' }), `Pontis clients - Section ${section} - ${new Date().toISOString().slice(0, 10)}.csv`);
 }

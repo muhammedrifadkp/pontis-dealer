@@ -183,7 +183,7 @@ export function note(f, values) {
   return '';
 }
 
-// Values as printed in the PDF and the Excel list
+// Values as printed in the PDF and shown on the Clients tab
 export function display(f, values) {
   const v = values[f.key];
   switch (f.type) {
