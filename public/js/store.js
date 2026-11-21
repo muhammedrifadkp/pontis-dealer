@@ -112,17 +112,19 @@ export const putOfficePdf = (ref, blob) => tx('officePdfs', 'readwrite', s => s.
 export const getOfficePdf = ref => tx('officePdfs', 'readonly', s => reqP(s.get(ref))).then(r => r ? r.blob : null);
 export const officePdfRefs = () => tx('officePdfs', 'readonly', s => reqP(s.getAllKeys())).then(k => new Set(k || []));
 
-// ---------- clients already sent (for Section 2) ----------
+// ---------- clients already sent ----------
+// One entry per consumer number: { consumer, name, mobile, mode, aadhaar, at (Section 1 sent), s2At (Section 2 sent) }
 const recentKey = owner => `pontis-recent-${owner}`;
 export function listRecent(owner) {
   try { return JSON.parse(localStorage.getItem(recentKey(owner)) || '[]'); } catch (e) { return []; }
 }
-export function addRecent(owner, c) {
-  const list = listRecent(owner).filter(x => x.consumer !== c.consumer);
-  list.unshift({ ...c, at: Date.now() });
-  try { localStorage.setItem(recentKey(owner), JSON.stringify(list.slice(0, 150))); } catch (e) { /* ignore */ }
-}
-export function markRecent(owner, consumer, patch) { // a key set to undefined is removed
-  const list = listRecent(owner).map(x => x.consumer === consumer ? { ...x, ...patch } : x);
-  try { localStorage.setItem(recentKey(owner), JSON.stringify(list)); } catch (e) { /* ignore */ }
+// Called on "Done": Section 1 keeps what fills Section 2; Section 2 then removes the Aadhaar number
+export function markSent(owner, section, c) {
+  const list = listRecent(owner);
+  const old = list.find(x => x.consumer === c.consumer);
+  const x = section === 1
+    ? { ...old, name: c.name, consumer: c.consumer, mobile: c.mobile, mode: c.mode, aadhaar: c.aadhaar, at: Date.now() }
+    : { ...old, name: (old && old.name) || c.name, consumer: c.consumer, aadhaar: undefined, s2At: Date.now() };
+  const rest = list.filter(y => y.consumer !== c.consumer);
+  try { localStorage.setItem(recentKey(owner), JSON.stringify([x, ...rest].slice(0, 150))); } catch (e) { /* ignore */ }
 }

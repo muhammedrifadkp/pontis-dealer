@@ -420,29 +420,54 @@ async function homeView() {
         <button class="btn primary block" type="button" data-new="2">${ICON.plus} Start Section 2</button>
       </section>
     </div>
-    <section class="list-block" id="drafts" hidden><h2>Unfinished</h2><ul class="items"></ul></section>
-    <section class="list-block" id="recent" hidden><h2>Clients sent</h2><ul class="items"></ul></section>
+    <section class="list-block" id="s1List" hidden><h2>Section 1</h2><ul class="items"></ul></section>
+    <section class="list-block" id="s2List" hidden><h2>Section 2</h2><ul class="items"></ul></section>
     <p class="install-tip" id="installTip" hidden></p>
   </main>`;
 
+  // Each client's forms on this phone: unfinished ones (drafts) and sent ones. A Section 2 belongs to a
+  // Section 1 when it was opened from it (fromId) or has the same consumer number.
   const drafts = await store.listDrafts(owner).catch(() => []);
-  if (drafts.length) {
-    $('#drafts').hidden = false;
-    // a form is removed DRAFT_DAYS after it was last changed; warn in its last week
-    const daysLeft = d => Math.max(1, Math.ceil((d.updatedAt + store.DRAFT_DAYS * 864e5 - Date.now()) / 864e5));
-    $('#drafts ul').innerHTML = drafts.map(d => `<li class="item">
-      <div class="item-main"><b>${esc(d.values.name || 'No name yet')}</b>
-      <span class="muted small">${esc(SECTIONS[d.section].title)}${d.mode ? ` · ${d.mode === 'loan' ? 'Loan' : 'Cash'}` : ''} · saved ${esc(ago(d.updatedAt))}</span>
-      ${daysLeft(d) <= 7 ? `<span class="warn-text small">Removed from this phone in ${daysLeft(d)} day${daysLeft(d) === 1 ? '' : 's'} unless you open it</span>` : ''}</div>
-      <div class="item-acts"><a class="btn sm" href="#/form/${esc(d.id)}">Continue</a>
-      <button class="btn sm ghost danger-text" type="button" data-del-draft="${esc(d.id)}" aria-label="Delete the unfinished form for ${esc(d.values.name || 'this client')}">Delete</button></div></li>`).join('');
+  const sent = store.listRecent(owner);
+  const sentFor = consumer => (consumer && sent.find(x => x.consumer === consumer)) || null;
+  const s2DraftFor = (id, consumer) => drafts.find(x => x.section === 2 && ((id && x.fromId === id) || (consumer && x.values.consumer === consumer))) || null;
+  const SHOW_SENT = 40;
+  const s1Items = [
+    ...drafts.filter(d => d.section === 1).map(d => {
+      const v = d.values, done = sentFor(v.consumer);
+      return { key: `d:${d.id}`, d, name: v.name, consumer: v.consumer || '', aadhaar: v.aadhaar, id: d.id, mode: d.mode, s2: s2DraftFor(d.id, v.consumer), s2Sent: !!(done && done.s2At) };
+    }),
+    ...sent.filter(c => c.at).sort((a, b) => b.at - a.at).slice(0, SHOW_SENT)
+      .map(c => ({ key: `c:${c.consumer}`, c, name: c.name, consumer: c.consumer, aadhaar: c.aadhaar, mode: c.mode, s2: s2DraftFor('', c.consumer), s2Sent: !!c.s2At }))
+  ];
+  const s2Items = [
+    ...drafts.filter(d => d.section === 2).map(d => ({ d, name: d.values.name, consumer: d.values.consumer || '' })),
+    ...sent.filter(c => c.s2At).sort((a, b) => b.s2At - a.s2At).slice(0, SHOW_SENT).map(c => ({ c, name: c.name, consumer: c.consumer }))
+  ];
+  // a form is removed DRAFT_DAYS after it was last changed; warn in its last week
+  const daysLeft = d => Math.max(1, Math.ceil((d.updatedAt + store.DRAFT_DAYS * 864e5 - Date.now()) / 864e5));
+  const expiry = d => (daysLeft(d) <= 7 ? `<span class="warn-text small">Removed from this phone in ${daysLeft(d)} day${daysLeft(d) === 1 ? '' : 's'} unless you open it</span>` : '');
+  const meta = (...parts) => `<span class="muted small">${parts.filter(Boolean).map(esc).join(' · ')}</span>`;
+  const modeName = m => (m === 'loan' ? 'Loan' : m === 'cash' ? 'Cash' : '');
+  const state = isSent => (isSent ? `<span class="pill ok">${ICON.check} Sent</span>` : '<span class="pill wait">Not sent yet</span>');
+  const s2State = it => (it.s2Sent ? `<span class="pill ok">${ICON.check} Section 2 sent</span>` : it.s2 ? '<span class="pill info">Section 2 started</span>' : '');
+  const delBtn = d => `<button class="btn sm ghost danger-text" type="button" data-del-draft="${esc(d.id)}" aria-label="Delete the unfinished form for ${esc(d.values.name || 'this client')}">Delete</button>`;
+  if (s1Items.length) {
+    $('#s1List').hidden = false;
+    $('#s1List ul').innerHTML = s1Items.map(it => `<li class="item">
+      <div class="item-main"><b>${esc(it.name || 'No name yet')}</b>
+        ${meta(modeName(it.mode), it.consumer && `Consumer ${it.consumer}`, it.d ? `saved ${ago(it.d.updatedAt)}` : `sent ${ago(it.c.at)}`)}
+        <span class="item-tags">${state(!it.d)}${s2State(it)}</span>${it.d ? expiry(it.d) : ''}</div>
+      <div class="item-acts">${it.d ? `<button class="btn sm" type="button" data-s1="${esc(it.key)}">Continue…</button>${delBtn(it.d)}`
+        : it.s2Sent ? '' : `<button class="btn sm" type="button" data-s2from="${esc(it.key)}">Section 2</button>`}</div></li>`).join('');
   }
-  const recent = store.listRecent(owner);
-  if (recent.length) {
-    $('#recent').hidden = false;
-    $('#recent ul').innerHTML = recent.slice(0, 40).map(c => `<li class="item">
-      <div class="item-main"><b>${esc(c.name)}</b><span class="muted small">Consumer ${esc(c.consumer)}${c.mode ? ` · ${c.mode === 'loan' ? 'Loan' : 'Cash'}` : ''} · Section 1 ${esc(ago(c.at))}${c.s2At ? ' · Section 2 sent' : ''}</span></div>
-      <div class="item-acts">${c.s2At ? `<span class="pill ok">${ICON.check} Done</span>` : `<button class="btn sm" type="button" data-new="2" data-consumer="${esc(c.consumer)}">Section 2</button>`}</div></li>`).join('');
+  if (s2Items.length) {
+    $('#s2List').hidden = false;
+    $('#s2List ul').innerHTML = s2Items.map(it => `<li class="item">
+      <div class="item-main"><b>${esc(it.name || 'No name yet')}</b>
+        ${meta(it.consumer && `Consumer ${it.consumer}`, it.d ? `saved ${ago(it.d.updatedAt)}` : `sent ${ago(it.c.s2At)}`)}
+        <span class="item-tags">${state(!it.d)}</span>${it.d ? expiry(it.d) : ''}</div>
+      <div class="item-acts">${it.d ? `<a class="btn sm" href="#/form/${esc(it.d.id)}">Continue</a>${delBtn(it.d)}` : ''}</div></li>`).join('');
   }
 
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -457,21 +482,52 @@ async function homeView() {
     if (ib) ib.onclick = async () => { installEvent.prompt(); await installEvent.userChoice; installEvent = null; tip.hidden = true; };
   }
 
-  // Section 2 for a client sent in Section 1: their consumer number, name and Aadhaar number are filled in.
-  // If Section 2 was already started for them, that form opens instead of a second one.
-  const startS2 = async c => {
-    if (c) {
-      const open = (await store.listDrafts(owner).catch(() => [])).find(x => x.section === 2 && x.values.consumer === c.consumer);
-      if (open) { toast(`Section 2 for ${c.name} was already started. It is opened.`); go(`#/form/${open.id}`); return; }
+  // Section 2 from a Section 1 (unfinished or sent): its consumer number, name and Aadhaar number are filled in.
+  // The Section 1 stays in its list. If Section 2 was already started, that form opens (with any of those
+  // boxes still empty there filled in) instead of a second one.
+  const openS2 = async it => {
+    const from = it ? { consumer: it.consumer, name: it.name, aadhaar: it.aadhaar } : {};
+    const open = it && (it.s2 || s2DraftFor(it.id, it.consumer));
+    if (open) {
+      let changed = false;
+      Object.entries(from).forEach(([k, v]) => { if (v && !open.values[k]) { open.values[k] = v; changed = true; } });
+      if (changed) await store.saveDraft(open);
+      go(`#/form/${open.id}`);
+      return;
     }
-    const values = c ? { consumer: c.consumer, name: c.name, ...(c.aadhaar ? { aadhaar: c.aadhaar } : {}) } : {};
-    const d = { id: store.newId(), owner, section: 2, mode: '', values, createdAt: Date.now() };
+    const values = Object.fromEntries(Object.entries(from).filter(([, v]) => v));
+    const d = { id: store.newId(), owner, section: 2, mode: '', values, fromId: (it && it.id) || '', createdAt: Date.now() };
     await store.saveDraft(d);
     go(`#/form/${d.id}`);
   };
-  const waitingS2 = () => store.listRecent(owner).filter(x => !x.s2At);
+  const itemByKey = key => s1Items.find(x => x.key === key);
+
+  // "Continue…" on an unfinished Section 1: carry on with it, or go on to its Section 2
+  const chooseSection = it => {
+    const s2Note = it.s2 ? `After installation · started ${ago(it.s2.updatedAt)}`
+      : it.s2Sent ? 'Section 2 was already sent for this client. This starts it again.'
+        : 'After installation. The consumer number, name and Aadhaar number come from Section 1.';
+    const m = openModal(`<h2 id="mTitle">${esc(it.name || 'No name yet')}</h2>
+      <p class="muted">Which section do you want to continue?</p>
+      <ul class="pick-list">
+        <li><button class="pick-client" type="button" data-go="1"><span class="tag">Section 1</span><b>Continue in Section 1</b>
+          <span class="muted small">Work start${modeName(it.mode) ? ` · ${modeName(it.mode)}` : ''} · saved ${esc(ago(it.d.updatedAt))}</span></button></li>
+        <li><button class="pick-client" type="button" data-go="2"><span class="tag sage">Section 2</span><b>Continue in Section 2</b>
+          <span class="muted small">${esc(s2Note)}</span></button></li>
+      </ul>
+      <button class="btn ghost block" type="button" data-close>Cancel</button>`);
+    $('[data-go="1"]', m).focus();
+    m.addEventListener('click', e => {
+      const b = e.target.closest('[data-go]');
+      if (b) { closeModal(); if (b.dataset.go === '1') go(`#/form/${it.d.id}`); else openS2(it); return; }
+      if (e.target.closest('[data-close]')) closeModal();
+    });
+  };
+
+  // "Start Section 2": choose the client from Section 1, or start an empty form
+  const waitingS2 = s1Items.filter(it => !it.s2Sent && (it.name || it.consumer)); // not forms with nothing typed yet
   const pickS2 = () => {
-    const list = waitingS2();
+    const list = waitingS2;
     const m = openModal(`<h2 id="mTitle">Start Section 2</h2>
       <p class="muted">Choose the client. Their consumer number, name and Aadhaar number come from Section 1.</p>
       ${list.length > 6 ? '<input type="search" data-q placeholder="Search name or consumer number…" aria-label="Search clients" autocomplete="off" spellcheck="false">' : ''}
@@ -481,9 +537,9 @@ async function homeView() {
     const ul = $('[data-list]', m), q = $('[data-q]', m);
     const draw = () => {
       const term = q ? q.value.trim().toLowerCase() : '', num = term.replace(/\D/g, '');
-      const shown = list.filter(c => !term || c.name.toLowerCase().includes(term) || (num.length >= 3 && c.consumer.includes(num)));
-      ul.innerHTML = shown.length ? shown.map(c => `<li><button class="pick-client" type="button" data-client="${esc(c.consumer)}">
-          <b>${esc(c.name)}</b><span class="muted small">Consumer <span class="mono">${esc(c.consumer)}</span> · Section 1 sent ${esc(ago(c.at))}</span></button></li>`).join('')
+      const shown = list.filter(it => !term || String(it.name || '').toLowerCase().includes(term) || (num.length >= 3 && it.consumer.includes(num)));
+      ul.innerHTML = shown.length ? shown.map(it => `<li><button class="pick-client" type="button" data-client="${esc(it.key)}">
+          <b>${esc(it.name || 'No name yet')}</b><span class="muted small">${it.consumer ? `Consumer <span class="mono">${esc(it.consumer)}</span> · ` : ''}Section 1 ${it.d ? `not sent yet, saved ${esc(ago(it.d.updatedAt))}` : `sent ${esc(ago(it.c.at))}`}${it.s2 ? ' · Section 2 started' : ''}</span></button></li>`).join('')
         : `<li class="muted small">No client matches “${esc(q.value)}”.</li>`;
     };
     draw();
@@ -491,19 +547,21 @@ async function homeView() {
     const first = $('[data-client]', ul); if (first) first.focus();
     m.addEventListener('click', e => {
       const b = e.target.closest('[data-client]');
-      if (b) { closeModal(); startS2(list.find(c => c.consumer === b.dataset.client)); return; }
-      if (e.target.closest('[data-blank]')) { closeModal(); startS2(null); return; }
+      if (b) { closeModal(); openS2(itemByKey(b.dataset.client)); return; }
+      if (e.target.closest('[data-blank]')) { closeModal(); openS2(null); return; }
       if (e.target.closest('[data-close]')) closeModal();
     });
   };
-  if (waitingS2().length) $('[data-new="2"]:not([data-consumer])').innerHTML = `${ICON.plus} Start Section 2…`;
+  if (waitingS2.length) $('[data-new="2"]').innerHTML = `${ICON.plus} Start Section 2…`;
 
   app.onclick = async e => {
+    const s1 = e.target.closest('[data-s1]');
+    if (s1) { chooseSection(itemByKey(s1.dataset.s1)); return; }
+    const s2from = e.target.closest('[data-s2from]');
+    if (s2from) { openS2(itemByKey(s2from.dataset.s2from)); return; }
     const n = e.target.closest('[data-new]');
     if (n && n.dataset.new === '2') {
-      if (n.dataset.consumer) startS2(store.listRecent(owner).find(x => x.consumer === n.dataset.consumer) || null);
-      else if (waitingS2().length) pickS2();
-      else startS2(null);
+      if (waitingS2.length) pickS2(); else openS2(null);
       return;
     }
     if (n) {
@@ -709,27 +767,36 @@ async function formView(id) {
   const alsoFilled = list => (list.length ? ` The ${list.join(' and ')} ${list.length > 1 ? 'were' : 'was'} filled from it too.` : '');
   function afterScan(keys) { save(); refresh(); keys.forEach(k => { if (fieldByKey[k]) showError(fieldByKey[k]); }); }
 
+  const shown = f => (f.type === 'aadhaar' ? display(f, d.values) : d.values[f.key]);
+  // a value read from a code goes into its box; returns what to tell the dealer
+  function putValue(f, value, r, from = '') {
+    setValue(f, value);
+    const filled = f.type === 'aadhaar' ? fillFromAadhaar(f, r || {}) : [];
+    if (d.qr) delete d.qr[f.key];
+    afterScan([f.key, ...Object.values(f.fill || {})]);
+    return `${f.label}${from}: ${shown(f)}.${alsoFilled(filled)}`;
+  }
+  // a new-type Aadhaar QR code: no full number, only its last 4 digits → { text, tone, typeNext }
+  function putPartial(f, r) {
+    d.qr = { ...(d.qr || {}), [f.key]: r.last4 };
+    const filled = fillFromAadhaar(f, r);
+    if (d.values[f.key]) touched.add(f.key);
+    afterScan([f.key, ...Object.values(f.fill || {})]);
+    const now = String(d.values[f.key] || '');
+    if (now.length === 12) {
+      return now.endsWith(r.last4)
+        ? { text: `The Aadhaar number typed matches this card: it ends in ${r.last4}.${alsoFilled(filled)}`, tone: 'ok' }
+        : { text: `This card’s Aadhaar number ends in ${r.last4}, but the number typed ends in ${now.slice(-4)}. Check the number.${alsoFilled(filled)}`, tone: 'warn' };
+    }
+    return { text: `This card has the new Aadhaar QR code. It does not hold the full Aadhaar number, only its last 4 digits: ${r.last4}. Type the 12-digit number from the card; the app checks that it ends in ${r.last4}.${alsoFilled(filled)}`, tone: '', typeNext: true };
+  }
+
   function scanField(f) {
     let typeNext = false;
     scanner({
       kind: f.type, title: `Scan: ${f.label}`,
-      accept(value, r) {
-        setValue(f, value);
-        const filled = f.type === 'aadhaar' ? fillFromAadhaar(f, r) : [];
-        if (d.qr) delete d.qr[f.key];
-        afterScan([f.key, ...Object.values(f.fill || {})]);
-        return { ok: true, msg: `${f.label}: ${f.type === 'aadhaar' ? display(f, d.values) : d.values[f.key]}.${alsoFilled(filled)}` };
-      },
-      partial(r) { // a new-type Aadhaar QR code: no full number, only its last 4 digits
-        d.qr = { ...(d.qr || {}), [f.key]: r.last4 };
-        const filled = fillFromAadhaar(f, r);
-        if (d.values[f.key]) touched.add(f.key);
-        afterScan([f.key, ...Object.values(f.fill || {})]);
-        const now = String(d.values[f.key] || '');
-        typeNext = now.length !== 12;
-        if (!typeNext) return (now.endsWith(r.last4) ? `The number typed matches this card: it ends in ${r.last4}.` : `This card’s Aadhaar number ends in ${r.last4}, but the number typed ends in ${now.slice(-4)}. Check the number.`) + alsoFilled(filled);
-        return `This card has the new Aadhaar QR code. It does not hold the full Aadhaar number, only its last 4 digits: ${r.last4}. Type the 12-digit number from the card; the app checks that it ends in ${r.last4}.${alsoFilled(filled)}`;
-      },
+      accept: (value, r) => ({ ok: true, msg: putValue(f, value, r) }),
+      partial(r) { const p = putPartial(f, r); typeNext = !!p.typeNext; return p.text; },
       after: () => { if (typeNext && form.isConnected) $(`#f-${f.key}`, form).focus(); }
     });
   }
@@ -777,6 +844,77 @@ async function formView(id) {
         return { ok: true, msg: `Panel ${i + 1}: ${v} ✓ Now panel ${left[0] + 1} of ${n}.` };
       }
     });
+  }
+
+  // ---------- numbers read from the photos the dealer adds ----------
+  // A photo of the Aadhaar or PAN card, the KSEB bill or a serial label (fields with readInto) is searched
+  // for its QR code or barcode. An empty box gets the value; a box already filled is checked against it.
+  async function readCodes(pf, files) {
+    const target = fieldByKey[pf.readInto];
+    const status = $(`[data-status="${pf.key}"]`, form);
+    if (!target || !status || !files.length) return;
+    const rd = scan.READERS[target.type === 'serials' ? 'serial' : target.type];
+    const say = (text, tone = '') => {
+      status.textContent = text;
+      status.classList.toggle('warn', tone === 'warn');
+      status.classList.toggle('ok', tone === 'ok');
+    };
+    say(files.length > 1 ? 'Looking for codes in the photos…' : 'Looking for a code in the photo…');
+    try {
+      const texts = [];
+      for (let i = 0; i < files.length; i++) {
+        if (files.length > 2) say(`Looking for codes: photo ${i + 1} of ${files.length}…`);
+        try { texts.push(...await scan.detectPhoto(files[i], rd.set)); }
+        catch (err) { if (err.message === 'reader') break; } // no code reader in this browser: the dealer types it
+      }
+      if (!form.isConnected) return;
+      const res = await Promise.all(uniq(texts).map(t => rd.read(t)));
+      const out = target.type === 'serials' ? serialsFromPhotos(res, files.length) : valueFromPhoto(target, res, rd);
+      say(out.text || '', out.tone);
+    } catch (err) { say(''); }
+  }
+  function valueFromPhoto(f, res, rd) {
+    const sure = uniq(res.filter(r => r.sure).flatMap(r => r.values));
+    const now = String(d.values[f.key] || '');
+    if (sure.length === 1) {
+      const r = res.find(x => x.sure && x.values.includes(sure[0])), v = tidy(f, sure[0]);
+      if (!now) return { text: putValue(f, sure[0], r, ' read from the code in the photo'), tone: 'ok' };
+      if (now === v) {
+        const filled = f.type === 'aadhaar' ? fillFromAadhaar(f, r) : [];
+        if (filled.length) afterScan(Object.values(f.fill || {}));
+        return { text: `${f.label}: matches the code in the photo.${alsoFilled(filled)}`, tone: 'ok' };
+      }
+      const fmt = x => (f.type === 'aadhaar' ? display(f, { [f.key]: x }) : x);
+      return { text: `${f.label}: the code in the photo reads ${fmt(v)}, but ${fmt(now)} is typed. Check it.`, tone: 'warn' };
+    }
+    const part = !sure.length && res.find(r => r.partial);
+    if (part) return putPartial(f, part);
+    if (!now && res.some(r => r.values.length)) return { text: `${f.label}: the code in the photo has more than one possible number. To choose one, tap the scan button in that box, then Choose a photo.`, tone: 'warn' };
+    if (f.type === 'pan' && res.length) return { text: rd.none, tone: 'warn' };
+    return { text: '' };
+  }
+  function serialsFromPhotos(res, nPhotos) {
+    const found = uniq(res.filter(r => r.sure && r.values.length === 1).map(r => serialOf(r.values[0])).filter(v => v.length >= 4));
+    const where = nPhotos > 1 ? 'the photos' : 'the photo';
+    if (!found.length) return { text: '' };
+    const n = panelCount();
+    if (!n) return { text: `${plural(found.length, 'serial number', 'serial numbers')} found in ${where}. Enter the number of panels first, then add ${where} again.`, tone: 'warn' };
+    const added = [];
+    let had = 0;
+    for (const v of found) {
+      if (sameAs(v, -1) >= 0) { had++; continue; }
+      const i = emptyBoxes()[0];
+      if (i === undefined) break;
+      putSerial(i, v);
+      added.push(i + 1);
+    }
+    const full = found.length - had - added.length;
+    const text = [
+      added.length ? `${plural(added.length, 'serial number', 'serial numbers')} read from ${where} and added (panel${added.length > 1 ? 's' : ''} ${added.slice(0, 8).join(', ')}${added.length > 8 ? '…' : ''}).` : '',
+      had ? `${had} ${had === 1 ? 'was' : 'were'} already in the boxes.` : '',
+      full ? `${full} did not fit: all ${n} boxes are full.` : ''
+    ].filter(Boolean).join(' ');
+    return { text, tone: full ? 'warn' : 'ok' };
   }
 
   form.addEventListener('input', e => {
@@ -847,7 +985,7 @@ async function formView(id) {
       const f = fieldByKey[rm.dataset.remove], i = Number(rm.dataset.i);
       const [gone] = d.values[f.key].splice(i, 1);
       if (gone) { store.deletePhotos([gone.pid]); const u = urls.get(gone.pid); if (u) { URL.revokeObjectURL(u); urls.delete(gone.pid); } }
-      const st = $(`[data-status="${f.key}"]`, form); if (st) { st.textContent = ''; st.classList.remove('warn'); }
+      const st = $(`[data-status="${f.key}"]`, form); if (st) { st.textContent = ''; st.classList.remove('warn', 'ok'); }
       save(); renderThumbs(f); refresh(); showError(f);
       $(`[data-photo="${f.key}"]`, form).focus();
     }
@@ -906,6 +1044,7 @@ async function formView(id) {
       touched.add(f.key);
       await store.saveDraft(d);
       renderThumbs(f); refresh(); showError(f);
+      if (f.readInto && take.length) readCodes(f, take); // the original photos, sharper than the ones kept
     } catch (err) {
       status.textContent = '';
       toast(err && err.message === 'jpeg' ? 'This phone could not prepare the photo. Please update the phone’s software or use another phone.'
@@ -999,8 +1138,7 @@ async function doneView(id) {
   $('#finish').onclick = async () => {
     const owner = session.user.phone;
     // the Aadhaar number is kept only to fill Section 2, and removed once Section 2 is sent
-    if (d.section === 1) store.addRecent(owner, { name: d.values.name, consumer: d.values.consumer, mobile: d.values.mobile, mode: d.mode, aadhaar: d.values.aadhaar });
-    else store.markRecent(owner, d.values.consumer, { s2At: Date.now(), aadhaar: undefined });
+    store.markSent(owner, d.section, { name: d.values.name, consumer: d.values.consumer, mobile: d.values.mobile, mode: d.mode, aadhaar: d.values.aadhaar });
     await store.deleteDraft(id);
     lastPdf = null;
     toast('Done. The client’s photos are removed from this phone.', 'good');

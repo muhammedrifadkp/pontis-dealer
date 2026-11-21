@@ -6,6 +6,8 @@
 // Scanning:    aadhaar, pan, consumer and serial boxes (and each panel's serial box) have a button that reads
 //              the QR code or barcode (scan.js); scan: false removes it. On an aadhaar box, fill: { name, age }
 //              names the boxes the card's QR code also fills, when they are still empty.
+//              On a photo field, readInto: '<key>' looks for a code in each photo added and fills that box
+//              (or checks it, when it is already filled).
 
 export const CO_APPLICANT_AGE = 60;
 export const INVERTER_BRANDS = ['Waaree', 'Havells', 'Deye', 'Other'];
@@ -17,23 +19,23 @@ export const SECTION_1 = [
   { key: 'advanceAmount', label: 'Advance amount received (₹)', type: 'decimal', allowZero: true, hint: 'Enter 0 if no advance was received' },
   { key: 'systemCapacity', label: 'System capacity (kW)', type: 'decimal', decimalPlaces: 3, placeholder: 'e.g. 3.42' },
   { key: 'consumer', label: 'Consumer number', type: 'consumer', hint: 'From the KSEB bill, usually 13 digits' },
-  { key: 'ksebBill', label: 'KSEB bill photo', type: 'photo' },
+  { key: 'ksebBill', label: 'KSEB bill photo', type: 'photo', readInto: 'consumer' },
   { key: 'mobile', label: 'Registered mobile number', type: 'mobile', hint: 'The number registered with KSEB' },
   { key: 'aadhaar', label: 'Aadhaar number', type: 'aadhaar', fill: { name: 'name', age: 'age' } },
-  { key: 'aadhaarFront', label: 'Aadhaar card photo (front)', type: 'photo' },
-  { key: 'aadhaarBack', label: 'Aadhaar card photo (back)', type: 'photo' },
+  { key: 'aadhaarFront', label: 'Aadhaar card photo (front)', type: 'photo', readInto: 'aadhaar' },
+  { key: 'aadhaarBack', label: 'Aadhaar card photo (back)', type: 'photo', readInto: 'aadhaar' },
   { key: 'age', label: 'Age', type: 'age', only: 'loan', hint: `${CO_APPLICANT_AGE} or above needs a co-applicant` },
 
   { key: 'pan', label: 'PAN number', type: 'pan', only: 'loan' },
-  { key: 'panPhoto', label: 'PAN card photo', type: 'photo', only: 'loan' },
+  { key: 'panPhoto', label: 'PAN card photo', type: 'photo', only: 'loan', readInto: 'pan' },
   { key: 'coName', label: 'Co-applicant name', type: 'text', only: 'loan', group: 'co' },
   { key: 'coRelation', label: 'Relation to the customer', type: 'text', only: 'loan', group: 'co', placeholder: 'Son, daughter, spouse…' },
   { key: 'coMobile', label: 'Co-applicant mobile number', type: 'mobile', only: 'loan', group: 'co' },
   { key: 'coAadhaar', label: 'Co-applicant Aadhaar number', type: 'aadhaar', only: 'loan', group: 'co', fill: { name: 'coName' } },
-  { key: 'coAadhaarFront', label: 'Co-applicant Aadhaar photo (front)', type: 'photo', only: 'loan', group: 'co' },
-  { key: 'coAadhaarBack', label: 'Co-applicant Aadhaar photo (back)', type: 'photo', only: 'loan', group: 'co' },
+  { key: 'coAadhaarFront', label: 'Co-applicant Aadhaar photo (front)', type: 'photo', only: 'loan', group: 'co', readInto: 'coAadhaar' },
+  { key: 'coAadhaarBack', label: 'Co-applicant Aadhaar photo (back)', type: 'photo', only: 'loan', group: 'co', readInto: 'coAadhaar' },
   { key: 'coPan', label: 'Co-applicant PAN number', type: 'pan', only: 'loan', group: 'co' },
-  { key: 'coPanPhoto', label: 'Co-applicant PAN card photo', type: 'photo', only: 'loan', group: 'co' },
+  { key: 'coPanPhoto', label: 'Co-applicant PAN card photo', type: 'photo', only: 'loan', group: 'co', readInto: 'coPan' },
   { key: 'location', label: 'Google location', type: 'location', hint: 'Tap at the customer’s house, or paste a Google Maps link' },
   { key: 'taxBuilding', label: 'Tax receipt: building', type: 'photo', only: 'loan' },
   { key: 'taxLand', label: 'Tax receipt: land', type: 'photo', only: 'loan' },
@@ -52,14 +54,14 @@ export const SECTION_2 = [
   { key: 'panelWatt', label: 'Panel watts (Wp)', type: 'number', min: 100, max: 1000, placeholder: 'e.g. 570' },
   { key: 'panelCount', label: 'Number of panels', type: 'number', min: 1, max: 200, placeholder: 'e.g. 6' },
   { key: 'panelSerials', label: 'Panel serial numbers', type: 'serials', countKey: 'panelCount' },
-  { key: 'panelSerialPhotos', label: 'Panel serial number photos', type: 'photos', min: 1, max: 60, hint: 'Add as many photos as needed to show every serial number' },
+  { key: 'panelSerialPhotos', label: 'Panel serial number photos', type: 'photos', min: 1, max: 60, readInto: 'panelSerials', hint: 'Add as many photos as needed to show every serial number. Serial numbers in the photos’ QR codes are filled into the boxes above.' },
   { key: 'panelsGps', label: 'GPS photo of the panels with the customer', type: 'gpsphoto' },
   { key: 'inverterBrand', label: 'Inverter brand', type: 'select', options: INVERTER_BRANDS, otherKey: 'inverterBrandOther' },
   { key: 'inverterBrandOther', label: 'Inverter brand name', type: 'text', showIf: v => v.inverterBrand === 'Other' },
   { key: 'inverterSerial', label: 'Inverter serial number', type: 'serial' },
-  { key: 'inverterSerialPhoto', label: 'Inverter serial number photo', type: 'photo' },
+  { key: 'inverterSerialPhoto', label: 'Inverter serial number photo', type: 'photo', readInto: 'inverterSerial' },
   { key: 'meterSerial', label: 'Energy meter serial number', type: 'serial' },
-  { key: 'meterSerialPhoto', label: 'Energy meter serial number photo', type: 'photo' },
+  { key: 'meterSerialPhoto', label: 'Energy meter serial number photo', type: 'photo', readInto: 'meterSerial' },
   { key: 'meterCodePhoto', label: 'Energy meter upper code photo', type: 'photo' }
 ];
 

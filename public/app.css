@@ -113,6 +113,8 @@ input.upper::placeholder{text-transform:none}
 .item-main{display:flex;flex-direction:column;min-width:0;flex:1}
 .item-main b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .item-acts{display:flex;gap:4px;flex:none;align-items:center}
+.item-acts:empty{display:none}
+.item-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:5px}
 .pill{display:inline-flex;align-items:center;gap:4px;font-size:12.5px;font-weight:600;padding:3px 9px;border-radius:999px;white-space:nowrap}
 .pill .ico{width:14px;height:14px}
 .pill.ok{background:var(--ok-50);color:var(--ok)}
@@ -142,6 +144,7 @@ fieldset.co legend{font:600 16px var(--head);color:var(--sage-d);padding:0 6px}
 .gps-badge{position:absolute;left:5px;bottom:5px;background:var(--sage);color:#fff;font:600 11px/1 var(--head);letter-spacing:.06em;padding:4px 6px;border-radius:5px}
 .gps-badge.none{background:var(--bad)}
 .photo-status.warn{color:var(--bad)}
+.photo-status.ok{color:var(--ok)}
 .add-photo{position:relative;width:100%;border-style:dashed;border-color:#A9C0D0;color:var(--blue-d);background:#F8FBFD}
 .photos.gps .add-photo{border-color:var(--sage);color:var(--sage-d);background:#F7FAF3}
 .photo-status{font-size:13px;color:var(--blue-d);font-weight:600;margin-top:6px}
@@ -204,6 +207,7 @@ fieldset.co legend{font:600 16px var(--head);color:var(--sage-d);padding:0 6px}
 .pick-client:focus-visible{outline:3px solid rgba(47,134,184,.45);outline-offset:2px}
 .pick-client b{color:var(--navy-d);overflow-wrap:anywhere}
 .modal .pick-client .muted{margin:0}
+.pick-client .tag{margin-bottom:6px}
 .sticky{position:fixed;left:0;right:0;bottom:0;z-index:15;background:rgba(255,255,255,.96);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-top:1px solid var(--line);padding:10px max(16px,env(safe-area-inset-left)) max(10px,env(safe-area-inset-bottom))}
 .sticky-in{max-width:640px;margin:0 auto}
 .form-sum{color:var(--bad);font-weight:600;font-size:13.5px;margin:0 0 8px;text-align:center}
@@ -344,6 +348,11 @@ body.modal-open{overflow:hidden}
   .lb-acts .btn{padding:9px 10px}
   .bar.has-tabs .who-name{display:none}
   .tabs a{white-space:nowrap}
+}
+@media (max-width:480px){
+  .items .item{flex-wrap:wrap}
+  .items .item-main{flex-basis:100%}
+  .items .item-acts{margin-left:auto}
 }
 @media (max-width:420px){
   .tabs{margin-left:2px}
