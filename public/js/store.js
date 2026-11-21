@@ -128,3 +128,14 @@ export function markSent(owner, section, c) {
   const rest = list.filter(y => y.consumer !== c.consumer);
   try { localStorage.setItem(recentKey(owner), JSON.stringify([x, ...rest].slice(0, 150))); } catch (e) { /* ignore */ }
 }
+// The dealer deletes a sent form from the Section 1 or Section 2 list. The client stays in the other
+// list; the entry is removed when neither is left.
+export function forgetSent(owner, section, consumer) {
+  const list = listRecent(owner).map(x => {
+    if (x.consumer !== consumer) return x;
+    const y = { ...x };
+    if (section === 1) { delete y.at; delete y.mobile; delete y.mode; delete y.aadhaar; } else delete y.s2At;
+    return y.at || y.s2At ? y : null;
+  }).filter(Boolean);
+  try { localStorage.setItem(recentKey(owner), JSON.stringify(list)); } catch (e) { /* ignore */ }
+}

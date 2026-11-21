@@ -452,6 +452,7 @@ async function homeView() {
   const state = isSent => (isSent ? `<span class="pill ok">${ICON.check} Sent</span>` : '<span class="pill wait">Not sent yet</span>');
   const s2State = it => (it.s2Sent ? `<span class="pill ok">${ICON.check} Section 2 sent</span>` : it.s2 ? '<span class="pill info">Section 2 started</span>' : '');
   const delBtn = d => `<button class="btn sm ghost danger-text" type="button" data-del-draft="${esc(d.id)}" aria-label="Delete the unfinished form for ${esc(d.values.name || 'this client')}">Delete</button>`;
+  const delSentBtn = (section, c) => `<button class="btn sm ghost danger-text" type="button" data-del-sent="${section}" data-consumer="${esc(c.consumer)}" aria-label="Delete ${esc(c.name || 'this client')} from the Section ${section} list">Delete</button>`;
   if (s1Items.length) {
     $('#s1List').hidden = false;
     $('#s1List ul').innerHTML = s1Items.map(it => `<li class="item">
@@ -459,7 +460,7 @@ async function homeView() {
         ${meta(modeName(it.mode), it.consumer && `Consumer ${it.consumer}`, it.d ? `saved ${ago(it.d.updatedAt)}` : `sent ${ago(it.c.at)}`)}
         <span class="item-tags">${state(!it.d)}${s2State(it)}</span>${it.d ? expiry(it.d) : ''}</div>
       <div class="item-acts">${it.d ? `<button class="btn sm" type="button" data-s1="${esc(it.key)}">Continue…</button>${delBtn(it.d)}`
-        : it.s2Sent ? '' : `<button class="btn sm" type="button" data-s2from="${esc(it.key)}">Section 2</button>`}</div></li>`).join('');
+        : `${it.s2Sent ? '' : `<button class="btn sm" type="button" data-s2from="${esc(it.key)}">Section 2</button>`}${delSentBtn(1, it.c)}`}</div></li>`).join('');
   }
   if (s2Items.length) {
     $('#s2List').hidden = false;
@@ -467,7 +468,7 @@ async function homeView() {
       <div class="item-main"><b>${esc(it.name || 'No name yet')}</b>
         ${meta(it.consumer && `Consumer ${it.consumer}`, it.d ? `saved ${ago(it.d.updatedAt)}` : `sent ${ago(it.c.s2At)}`)}
         <span class="item-tags">${state(!it.d)}</span>${it.d ? expiry(it.d) : ''}</div>
-      <div class="item-acts">${it.d ? `<a class="btn sm" href="#/form/${esc(it.d.id)}">Continue</a>${delBtn(it.d)}` : ''}</div></li>`).join('');
+      <div class="item-acts">${it.d ? `<a class="btn sm" href="#/form/${esc(it.d.id)}">Continue</a>${delBtn(it.d)}` : delSentBtn(2, it.c)}</div></li>`).join('');
   }
 
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -573,6 +574,23 @@ async function homeView() {
     const del = e.target.closest('[data-del-draft]');
     if (del && await confirmBox('Delete this unfinished form?', 'The details and photos typed so far are removed from this phone.', 'Delete', true)) {
       await store.deleteDraft(del.dataset.delDraft);
+      toast('Deleted.');
+      render();
+      return;
+    }
+    // a sent form: its PDF has gone to Pontis Energy, so only this phone's list entry is removed
+    const delSent = e.target.closest('[data-del-sent]');
+    if (delSent) {
+      const section = Number(delSent.dataset.delSent), c = sent.find(x => x.consumer === delSent.dataset.consumer);
+      if (!c) return;
+      const other = section === 1 ? 2 : 1, inOther = section === 1 ? !!c.s2At : !!c.at;
+      const note = [
+        'The PDF was already sent to Pontis Energy, so it is not affected.',
+        inOther ? `${c.name} stays in the Section ${other} list.` : '',
+        section === 1 && !c.s2At && !s2DraftFor('', c.consumer) ? 'Section 2 for this client will then need the consumer number, name and Aadhaar number typed.' : ''
+      ].filter(Boolean).join(' ');
+      if (!await confirmBox(`Delete ${c.name} from the Section ${section} list?`, note, 'Delete', true)) return;
+      store.forgetSent(owner, section, c.consumer);
       toast('Deleted.');
       render();
     }
