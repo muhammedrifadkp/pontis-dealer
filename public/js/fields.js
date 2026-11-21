@@ -3,6 +3,9 @@
 // Field types: text, consumer, mobile, aadhaar, pan, email, age, number, decimal, select, serial,
 //              photo (one), photos (several), gpsphoto (camera only, stamped with GPS), location, serials
 // Options:     required (default true), only: 'loan' | 'cash', group: 'co' (co-applicant, loan and age 60+)
+// Scanning:    aadhaar, pan, consumer and serial boxes (and each panel's serial box) have a button that reads
+//              the QR code or barcode (scan.js); scan: false removes it. On an aadhaar box, fill: { name, age }
+//              names the boxes the card's QR code also fills, when they are still empty.
 
 export const CO_APPLICANT_AGE = 60;
 export const INVERTER_BRANDS = ['Waaree', 'Havells', 'Deye', 'Other'];
@@ -16,7 +19,7 @@ export const SECTION_1 = [
   { key: 'consumer', label: 'Consumer number', type: 'consumer', hint: 'From the KSEB bill, usually 13 digits' },
   { key: 'ksebBill', label: 'KSEB bill photo', type: 'photo' },
   { key: 'mobile', label: 'Registered mobile number', type: 'mobile', hint: 'The number registered with KSEB' },
-  { key: 'aadhaar', label: 'Aadhaar number', type: 'aadhaar' },
+  { key: 'aadhaar', label: 'Aadhaar number', type: 'aadhaar', fill: { name: 'name', age: 'age' } },
   { key: 'aadhaarFront', label: 'Aadhaar card photo (front)', type: 'photo' },
   { key: 'aadhaarBack', label: 'Aadhaar card photo (back)', type: 'photo' },
   { key: 'age', label: 'Age', type: 'age', only: 'loan', hint: `${CO_APPLICANT_AGE} or above needs a co-applicant` },
@@ -26,7 +29,7 @@ export const SECTION_1 = [
   { key: 'coName', label: 'Co-applicant name', type: 'text', only: 'loan', group: 'co' },
   { key: 'coRelation', label: 'Relation to the customer', type: 'text', only: 'loan', group: 'co', placeholder: 'Son, daughter, spouse…' },
   { key: 'coMobile', label: 'Co-applicant mobile number', type: 'mobile', only: 'loan', group: 'co' },
-  { key: 'coAadhaar', label: 'Co-applicant Aadhaar number', type: 'aadhaar', only: 'loan', group: 'co' },
+  { key: 'coAadhaar', label: 'Co-applicant Aadhaar number', type: 'aadhaar', only: 'loan', group: 'co', fill: { name: 'coName' } },
   { key: 'coAadhaarFront', label: 'Co-applicant Aadhaar photo (front)', type: 'photo', only: 'loan', group: 'co' },
   { key: 'coAadhaarBack', label: 'Co-applicant Aadhaar photo (back)', type: 'photo', only: 'loan', group: 'co' },
   { key: 'coPan', label: 'Co-applicant PAN number', type: 'pan', only: 'loan', group: 'co' },
@@ -45,7 +48,7 @@ export const SECTION_1 = [
 export const SECTION_2 = [
   { key: 'consumer', label: 'Consumer number', type: 'consumer' },
   { key: 'name', label: 'Customer name', type: 'text' },
-  { key: 'aadhaar', label: 'Aadhaar number', type: 'aadhaar' },
+  { key: 'aadhaar', label: 'Aadhaar number', type: 'aadhaar', fill: { name: 'name' } },
   { key: 'panelWatt', label: 'Panel watts (Wp)', type: 'number', min: 100, max: 1000, placeholder: 'e.g. 570' },
   { key: 'panelCount', label: 'Number of panels', type: 'number', min: 1, max: 200, placeholder: 'e.g. 6' },
   { key: 'panelSerials', label: 'Panel serial numbers', type: 'serials', countKey: 'panelCount' },

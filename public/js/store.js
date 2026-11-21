@@ -1,5 +1,6 @@
 // Kept on the dealer's phone only: unfinished forms (drafts) with their photos, and a short list of
-// clients already sent (name, consumer number and mobile only) to fill Section 2 quickly.
+// clients already sent (name, consumer number and mobile; the Aadhaar number until Section 2 is sent)
+// to fill Section 2 quickly.
 // Drafts are deleted after the PDF is sent ("Done") or DRAFT_DAYS after they were last changed.
 // On the office's device: the client list read from received PDFs ("office"), and the PDFs themselves
 // ("officePdfs"), so their photos can be seen and saved later.
@@ -121,7 +122,7 @@ export function addRecent(owner, c) {
   list.unshift({ ...c, at: Date.now() });
   try { localStorage.setItem(recentKey(owner), JSON.stringify(list.slice(0, 150))); } catch (e) { /* ignore */ }
 }
-export function markRecent(owner, consumer, patch) {
+export function markRecent(owner, consumer, patch) { // a key set to undefined is removed
   const list = listRecent(owner).map(x => x.consumer === consumer ? { ...x, ...patch } : x);
   try { localStorage.setItem(recentKey(owner), JSON.stringify(list)); } catch (e) { /* ignore */ }
 }

@@ -2,8 +2,9 @@
 // One login screen. The Pontis office (admin) manages dealers; dealers fill client forms that become a PDF
 // they send on WhatsApp. Client details stay on the dealer's phone until sent, and never reach the server.
 
-import { SECTIONS, activeFields, needsCoApplicant, check, note, tidy, display, isPhoto, normMobile } from './fields.js';
+import { SECTIONS, activeFields, needsCoApplicant, check, note, tidy, display, isPhoto, normMobile, printable } from './fields.js';
 import * as store from './store.js';
+import * as scan from './scan.js';
 import { preparePhoto, getPosition, readExifGps, fmtCoord } from './media.js';
 import { buildClientPdf } from './pdf.js';
 import { readPdfFiles, groupClients, clientKey, extractPhotos, savePhotos, fileName, download } from './office.js';
@@ -35,8 +36,11 @@ const ICON = {
   copy: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h10"/></svg>',
   phone: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/></svg>',
   next: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>',
-  save: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>'
+  save: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>',
+  scan: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16M8.5 8.5v7M12 8.5v7M15.5 8.5v7"/></svg>',
+  bolt: '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></svg>'
 };
+const uniq = a => [...new Set(a)];
 
 // ---------- session ----------
 let session = null;
@@ -130,6 +134,171 @@ function confirmBox(title, text, okLabel, danger) {
     $('[data-no]', m).onclick = () => closeModal();
   });
 }
+// ---------- QR code / barcode scanner ----------
+// The camera looks for codes until one gives the field's value; "Choose a photo" reads a photo or a
+// screenshot instead. o: { kind (scan.READERS), title, multi (stays open for the next code), aim() (the
+// line under the picture), accept(value, result) → { ok, msg, done }, partial(result) → message, after() }
+const READER_FAIL = 'The code reader could not start in this browser. Update Chrome or Safari, or type the number.';
+function scanner(o) {
+  const rd = scan.READERS[o.kind];
+  const aim = () => (o.aim ? o.aim() : rd.aim);
+  let cam = null, timer = 0, loop = 0, closed = false, paused = false, starting = false;
+  const seen = new Map(); // code text → when the camera last saw it (Infinity: answered in the list, ignore it)
+  const stopCam = () => { loop++; clearTimeout(timer); if (cam) { cam.stop(); cam = null; } };
+  clearTimeout(toast.t); $('#toast').className = 'toast'; // an earlier message would cover the buttons
+  const onVis = () => { if (document.visibilityState === 'visible' && !closed && !paused) startCam(); };
+  const m = openModal(`<div class="scan-head"><h2 id="mTitle">${esc(o.title)}</h2>
+      <button class="btn ghost icon" type="button" data-x aria-label="Close">×</button></div>
+    <div class="scan-view"><video muted playsinline aria-hidden="true"></video><span class="scan-frame" aria-hidden="true"></span>
+      <p class="scan-cam" data-cam>Starting the camera…</p></div>
+    <p class="scan-status" data-status aria-live="polite"></p>
+    <div class="scan-pick" data-pick hidden></div>
+    <div class="scan-acts" data-acts>
+      <label class="btn">${ICON.image} Choose a photo<input class="vh" type="file" accept="image/*" data-file${o.multi ? ' multiple' : ''}></label>
+      <button class="btn" type="button" data-torch aria-pressed="false" hidden>${ICON.bolt} Light</button>
+      <button class="btn${o.multi ? ' primary' : ''}" type="button" data-x>${o.multi ? 'Done' : 'Cancel'}</button>
+    </div>`, { cls: 'scanner', onClose: () => {
+    closed = true; stopCam();
+    document.removeEventListener('visibilitychange', onVis);
+    if (o.after) setTimeout(o.after, 0); // after the dialog has handed the focus back
+  } });
+  const video = $('video', m), camMsg = $('[data-cam]', m), status = $('[data-status]', m), pick = $('[data-pick]', m), torch = $('[data-torch]', m);
+  const say = (msg, tone = '') => { status.textContent = msg; status.className = `scan-status${tone ? ` ${tone}` : ''}`; };
+  const buzz = () => { try { if (navigator.vibrate) navigator.vibrate(70); } catch (e) { /* no vibration */ } };
+  $$('[data-x]', m).forEach(b => { b.onclick = closeModal; });
+  say(aim());
+
+  const tick = async gen => {
+    if (gen !== loop || closed || !cam) return;
+    if (!paused && video.readyState >= 2 && video.videoWidth) {
+      try {
+        const texts = await scan.detectFrame(video, rd.set);
+        if (texts.length && gen === loop && !closed && !paused) await handle(texts, false);
+      } catch (err) { /* this picture could not be read; the next one is tried */ }
+    }
+    if (gen === loop && !closed && cam) timer = setTimeout(() => tick(gen), 120);
+  };
+  const startCam = async () => {
+    if (closed || starting) return;
+    if (cam && cam.track.readyState === 'live') { if (video.paused) video.play().catch(() => {}); return; }
+    starting = true;
+    stopCam();
+    camMsg.textContent = 'Starting the camera…';
+    // the camera and the code reader start together (the reader may need to load the first time)
+    const [c, ready] = await Promise.all([scan.startCamera(video).catch(err => err), scan.prepare(rd.set).catch(err => err)]);
+    starting = false;
+    const failed = ready instanceof Error ? ready : c instanceof Error ? c : null;
+    if (failed || closed) {
+      if (!(c instanceof Error)) c.stop();
+      if (failed) camMsg.textContent = failed.message === 'reader' ? READER_FAIL : failed.message;
+      return;
+    }
+    cam = c;
+    camMsg.textContent = '';
+    torch.hidden = !cam.torch;
+    tick(++loop);
+  };
+
+  const take = (value, r) => {
+    const out = o.accept(value, r || {});
+    if (out.ok) buzz();
+    if (out.done || (out.ok && !o.multi)) { closeModal(); toast(out.msg, out.ok ? 'good' : ''); return; }
+    say(out.msg, out.ok ? 'ok' : 'warn');
+  };
+  // several possible values: the dealer picks the right one
+  const choose = (values, texts) => {
+    paused = true;
+    pick.hidden = false;
+    pick.innerHTML = `<p class="scan-q">${esc(rd.which)}</p>
+      <div class="scan-list">${values.map((v, i) => `<button class="btn" type="button" data-v="${i}"><span class="mono">${esc(v)}</span></button>`).join('')}</div>
+      <button class="btn ghost sm" type="button" data-again>None of these: scan again</button>
+      <details class="scan-raw"><summary>What the code says</summary><pre>${esc(texts.join('\n\n').slice(0, 1200))}</pre></details>`;
+    say('');
+    $('[data-v]', pick).focus();
+    pick.onclick = e => {
+      const b = e.target.closest('[data-v]'), again = e.target.closest('[data-again]');
+      if (!b && !again) return;
+      texts.forEach(t => seen.set(t, Infinity)); // do not ask again about the same code
+      pick.hidden = true; pick.innerHTML = ''; paused = false;
+      if (b) take(values[Number(b.dataset.v)]); else say(aim());
+    };
+  };
+  // an Aadhaar QR code without the full number: say so, and stop
+  const partial = r => {
+    paused = true; stopCam();
+    buzz();
+    $('.scan-view', m).hidden = true;
+    $('[data-acts]', m).hidden = true;
+    say('');
+    pick.hidden = false;
+    pick.innerHTML = `<p class="scan-note">${esc(o.partial(r))}</p><button class="btn primary block" type="button" data-ok>OK</button>`;
+    const ok = $('[data-ok]', pick);
+    ok.onclick = closeModal;
+    ok.focus();
+  };
+  const handle = async (all, fromPhoto) => {
+    // a code is handled when it comes into view, not again while it stays there
+    const now = Date.now();
+    const texts = fromPhoto ? all : all.filter(t => {
+      const last = seen.get(t);
+      if (last === Infinity) return false;
+      seen.set(t, now);
+      return !last || now - last > 2500;
+    });
+    if (!texts.length) return;
+    const res = await Promise.all(texts.map(t => rd.read(t)));
+    if (closed) return;
+    if (o.multi) { // each code is the next box's value
+      let said = false;
+      for (let i = 0; i < res.length && !closed; i++) {
+        const r = res[i];
+        if (r.sure && r.values.length === 1) { take(r.values[0], r); said = true; }
+        else if (r.values.length) { choose(r.values, [texts[i]]); return; }
+      }
+      if (!said && !closed) say((res.find(r => r.none) || rd).none, 'warn');
+      return;
+    }
+    const sure = uniq(res.filter(r => r.sure).flatMap(r => r.values));
+    if (sure.length === 1) { take(sure[0], res.find(r => r.sure && r.values.includes(sure[0]))); return; }
+    const any = uniq(res.flatMap(r => r.values));
+    if (any.length) { choose(any, texts); return; }
+    const part = res.find(r => r.partial);
+    if (part) { partial(part); return; }
+    say((res.find(r => r.none) || rd).none, 'warn');
+  };
+
+  $('[data-file]', m).addEventListener('change', async e => {
+    const files = [...e.target.files];
+    e.target.value = '';
+    if (!files.length) return;
+    paused = true;
+    pick.hidden = true;
+    say(files.length > 1 ? `Reading ${files.length} photos…` : 'Reading the photo…');
+    const texts = [];
+    let unreadable = 0;
+    for (const f of files) {
+      try { texts.push(...await scan.detectPhoto(f, rd.set)); }
+      catch (err) {
+        if (err.message === 'reader') { paused = false; say(READER_FAIL, 'warn'); return; }
+        unreadable++;
+      }
+    }
+    if (closed) return;
+    paused = false;
+    if (texts.length) { await handle(uniq(texts), true); return; }
+    say(unreadable === files.length
+      ? 'This photo could not be opened. Use a JPG or PNG photo or screenshot.'
+      : `No code found in ${files.length > 1 ? 'these photos' : 'this photo'}. Take a closer, sharp photo of just the code, in good light.`, 'warn');
+  });
+  torch.onclick = async () => {
+    const on = torch.getAttribute('aria-pressed') !== 'true';
+    try { await cam.setTorch(on); torch.setAttribute('aria-pressed', String(on)); }
+    catch (e) { toast('The light could not be turned on.', 'bad'); }
+  };
+  document.addEventListener('visibilitychange', onVis);
+  startCam();
+}
+
 function topBar(extra = '') {
   return `<header class="bar${extra ? ' has-tabs' : ''}">
     <a class="brand" href="#/" aria-label="Pontis Energy home"><img src="assets/icon.png" alt="" width="30" height="27"><span translate="no">Pontis Energy</span></a>
@@ -288,16 +457,57 @@ async function homeView() {
     if (ib) ib.onclick = async () => { installEvent.prompt(); await installEvent.userChoice; installEvent = null; tip.hidden = true; };
   }
 
+  // Section 2 for a client sent in Section 1: their consumer number, name and Aadhaar number are filled in.
+  // If Section 2 was already started for them, that form opens instead of a second one.
+  const startS2 = async c => {
+    if (c) {
+      const open = (await store.listDrafts(owner).catch(() => [])).find(x => x.section === 2 && x.values.consumer === c.consumer);
+      if (open) { toast(`Section 2 for ${c.name} was already started. It is opened.`); go(`#/form/${open.id}`); return; }
+    }
+    const values = c ? { consumer: c.consumer, name: c.name, ...(c.aadhaar ? { aadhaar: c.aadhaar } : {}) } : {};
+    const d = { id: store.newId(), owner, section: 2, mode: '', values, createdAt: Date.now() };
+    await store.saveDraft(d);
+    go(`#/form/${d.id}`);
+  };
+  const waitingS2 = () => store.listRecent(owner).filter(x => !x.s2At);
+  const pickS2 = () => {
+    const list = waitingS2();
+    const m = openModal(`<h2 id="mTitle">Start Section 2</h2>
+      <p class="muted">Choose the client. Their consumer number, name and Aadhaar number come from Section 1.</p>
+      ${list.length > 6 ? '<input type="search" data-q placeholder="Search name or consumer number…" aria-label="Search clients" autocomplete="off" spellcheck="false">' : ''}
+      <ul class="pick-list" data-list></ul>
+      <div class="stack"><button class="btn block" type="button" data-blank>${ICON.plus} A client not in this list</button>
+      <button class="btn ghost block" type="button" data-close>Cancel</button></div>`);
+    const ul = $('[data-list]', m), q = $('[data-q]', m);
+    const draw = () => {
+      const term = q ? q.value.trim().toLowerCase() : '', num = term.replace(/\D/g, '');
+      const shown = list.filter(c => !term || c.name.toLowerCase().includes(term) || (num.length >= 3 && c.consumer.includes(num)));
+      ul.innerHTML = shown.length ? shown.map(c => `<li><button class="pick-client" type="button" data-client="${esc(c.consumer)}">
+          <b>${esc(c.name)}</b><span class="muted small">Consumer <span class="mono">${esc(c.consumer)}</span> · Section 1 sent ${esc(ago(c.at))}</span></button></li>`).join('')
+        : `<li class="muted small">No client matches “${esc(q.value)}”.</li>`;
+    };
+    draw();
+    if (q) q.addEventListener('input', draw);
+    const first = $('[data-client]', ul); if (first) first.focus();
+    m.addEventListener('click', e => {
+      const b = e.target.closest('[data-client]');
+      if (b) { closeModal(); startS2(list.find(c => c.consumer === b.dataset.client)); return; }
+      if (e.target.closest('[data-blank]')) { closeModal(); startS2(null); return; }
+      if (e.target.closest('[data-close]')) closeModal();
+    });
+  };
+  if (waitingS2().length) $('[data-new="2"]:not([data-consumer])').innerHTML = `${ICON.plus} Start Section 2…`;
+
   app.onclick = async e => {
     const n = e.target.closest('[data-new]');
+    if (n && n.dataset.new === '2') {
+      if (n.dataset.consumer) startS2(store.listRecent(owner).find(x => x.consumer === n.dataset.consumer) || null);
+      else if (waitingS2().length) pickS2();
+      else startS2(null);
+      return;
+    }
     if (n) {
-      const section = Number(n.dataset.new);
-      const values = {};
-      if (section === 2 && n.dataset.consumer) {
-        const c = store.listRecent(owner).find(x => x.consumer === n.dataset.consumer);
-        if (c) Object.assign(values, { consumer: c.consumer, name: c.name });
-      }
-      const d = { id: store.newId(), owner, section, mode: n.dataset.mode || '', values, createdAt: Date.now() };
+      const d = { id: store.newId(), owner, section: 1, mode: n.dataset.mode || '', values: {}, createdAt: Date.now() };
       await store.saveDraft(d);
       go(`#/form/${d.id}`);
       return;
@@ -319,6 +529,10 @@ function photoUrl(pid, blob) {
   return urls.get(pid);
 }
 function freeUrls() { urls.forEach(u => URL.revokeObjectURL(u)); urls.clear(); }
+
+// a scan button inside the box: these fields can be read from a QR code or barcode
+const SCAN_TYPES = ['aadhaar', 'pan', 'consumer', 'serial'];
+const scanBtn = (attr, label) => `<button class="scan-btn" type="button" ${attr} aria-label="${esc(label)}" title="Scan QR code"><span class="scan-box">${ICON.scan}</span></button>`;
 
 function fieldHtml(f, v) {
   const id = `f-${f.key}`;
@@ -345,6 +559,7 @@ function fieldHtml(f, v) {
     case 'serials': body = `<div class="serials" id="${id}" role="group" aria-describedby="${describedBy}"></div>`; break;
     case 'photo': case 'photos': case 'gpsphoto': body = photoHtml(f); break;
   }
+  if (SCAN_TYPES.includes(f.type) && f.scan !== false) body = `<div class="scan-in">${body}${scanBtn(`data-scan="${f.key}"`, `Scan the code: ${f.label}`)}</div>`;
   const labelTag = ['photo', 'photos', 'gpsphoto', 'location', 'serials'].includes(f.type) ? `<span class="lbl" id="${id}-lbl">` : `<label class="lbl" for="${id}">`;
   const labelEnd = labelTag.startsWith('<span') ? '</span>' : '</label>';
   return `<div class="fld-wrap" data-f="${f.key}">${labelTag}${esc(f.label)}${req}${labelEnd}${body}${hint}
@@ -422,7 +637,11 @@ async function formView(id) {
     w.classList.toggle('has-err', !!msg);
     const inp = $(`#f-${f.key}`, w);
     if (inp && inp.tagName !== 'DIV') inp.setAttribute('aria-invalid', msg ? 'true' : 'false');
-    $('.note-soft', w).textContent = touched.has(f.key) && !msg ? note(f, d.values) : '';
+    let soft = touched.has(f.key) && !msg ? note(f, d.values) : '';
+    // a new-type Aadhaar QR code gives only the last 4 digits: the typed number should end with them
+    const last4 = f.type === 'aadhaar' && d.qr && d.qr[f.key], typed = String(d.values[f.key] || '');
+    if (!msg && !soft && last4 && typed.length === 12 && !typed.endsWith(last4)) soft = `The Aadhaar QR code scanned ends in ${last4}, but this number ends in ${typed.slice(-4)}. Check the number.`;
+    $('.note-soft', w).textContent = soft;
     return msg;
   }
   function refresh() {
@@ -447,7 +666,9 @@ async function formView(id) {
     const list = Array.isArray(d.values[f.key]) ? d.values[f.key] : [];
     if (box.dataset.n === String(n)) return; // already showing this many boxes
     box.dataset.n = String(n);
-    box.innerHTML = n ? Array.from({ length: n }, (_, i) => `<label class="serial"><span>${i + 1}</span><input type="text" data-serial="${i}" value="${esc(list[i] || '')}" autocomplete="off" autocapitalize="characters" spellcheck="false" class="upper mono" aria-label="Panel ${i + 1} serial number"></label>`).join('')
+    box.innerHTML = n ? (n > 1 ? `<div class="serials-scan"><button class="btn" type="button" data-scanall>${ICON.scan} Scan all panels</button>
+        <p class="hint">The camera stays open: scan one panel after another, and the boxes fill in order.</p></div>` : '')
+      + Array.from({ length: n }, (_, i) => `<div class="serial"><span aria-hidden="true">${i + 1}</span><div class="scan-in"><input type="text" data-serial="${i}" value="${esc(list[i] || '')}" autocomplete="off" autocapitalize="characters" spellcheck="false" class="upper mono" aria-label="Panel ${i + 1} serial number">${scanBtn(`data-scan-serial="${i}"`, `Scan the code of panel ${i + 1}`)}</div></div>`).join('')
       : '<p class="serials-empty">Enter the <b>number of panels</b> above. A box then appears here for each panel’s serial number.</p>';
   }
   function renderThumbs(f) {
@@ -467,6 +688,96 @@ async function formView(id) {
     if (['photo', 'photos', 'gpsphoto'].includes(f.type)) renderThumbs(f);
   });
   refresh();
+
+  // ---------- values read from a QR code or barcode ----------
+  function setValue(f, raw) {
+    d.values[f.key] = tidy(f, raw);
+    const inp = $(`#f-${f.key}`, form);
+    if (inp) inp.value = f.type === 'aadhaar' ? display(f, d.values) : d.values[f.key];
+    touched.add(f.key);
+  }
+  // the name and age from an Aadhaar QR code go into their boxes, only when those are still empty
+  function fillFromAadhaar(f, r) {
+    const to = f.fill || {}, filled = [];
+    const nf = fieldByKey[to.name], af = fieldByKey[to.age];
+    const name = String(r.name || '').replace(/\s+/g, ' ').trim();
+    if (nf && name.length >= 2 && !d.values[nf.key] && printable(name)) { setValue(nf, name); filled.push('name'); }
+    const age = scan.ageFrom(r.dob);
+    if (af && age && !d.values[af.key]) { setValue(af, String(age)); filled.push('age'); }
+    return filled;
+  }
+  const alsoFilled = list => (list.length ? ` The ${list.join(' and ')} ${list.length > 1 ? 'were' : 'was'} filled from it too.` : '');
+  function afterScan(keys) { save(); refresh(); keys.forEach(k => { if (fieldByKey[k]) showError(fieldByKey[k]); }); }
+
+  function scanField(f) {
+    let typeNext = false;
+    scanner({
+      kind: f.type, title: `Scan: ${f.label}`,
+      accept(value, r) {
+        setValue(f, value);
+        const filled = f.type === 'aadhaar' ? fillFromAadhaar(f, r) : [];
+        if (d.qr) delete d.qr[f.key];
+        afterScan([f.key, ...Object.values(f.fill || {})]);
+        return { ok: true, msg: `${f.label}: ${f.type === 'aadhaar' ? display(f, d.values) : d.values[f.key]}.${alsoFilled(filled)}` };
+      },
+      partial(r) { // a new-type Aadhaar QR code: no full number, only its last 4 digits
+        d.qr = { ...(d.qr || {}), [f.key]: r.last4 };
+        const filled = fillFromAadhaar(f, r);
+        if (d.values[f.key]) touched.add(f.key);
+        afterScan([f.key, ...Object.values(f.fill || {})]);
+        const now = String(d.values[f.key] || '');
+        typeNext = now.length !== 12;
+        if (!typeNext) return (now.endsWith(r.last4) ? `The number typed matches this card: it ends in ${r.last4}.` : `This card’s Aadhaar number ends in ${r.last4}, but the number typed ends in ${now.slice(-4)}. Check the number.`) + alsoFilled(filled);
+        return `This card has the new Aadhaar QR code. It does not hold the full Aadhaar number, only its last 4 digits: ${r.last4}. Type the 12-digit number from the card; the app checks that it ends in ${r.last4}.${alsoFilled(filled)}`;
+      },
+      after: () => { if (typeNext && form.isConnected) $(`#f-${f.key}`, form).focus(); }
+    });
+  }
+
+  // panel serial numbers: one box, or all the empty boxes one after another
+  const sf = allFields.find(x => x.type === 'serials');
+  const serialList = () => (Array.isArray(d.values[sf.key]) ? d.values[sf.key] : (d.values[sf.key] = []));
+  const panelCount = () => Math.min(200, Number(d.values[sf.countKey]) || 0);
+  const emptyBoxes = () => Array.from({ length: panelCount() }, (_, i) => i).filter(i => !String(serialList()[i] || '').trim());
+  const sameAs = (v, skip) => serialList().slice(0, panelCount()).findIndex((x, j) => j !== skip && x === v);
+  function putSerial(i, v) {
+    serialList()[i] = v;
+    const inp = $(`[data-serial="${i}"]`, form);
+    if (inp) inp.value = v;
+    touched.add(sf.key);
+    save(); refresh();
+  }
+  const serialOf = value => tidy({ type: 'serial' }, value);
+  function scanSerial(i) {
+    scanner({
+      kind: 'serial', title: `Scan: panel ${i + 1} serial number`,
+      accept(value) {
+        const v = serialOf(value), dup = sameAs(v, i);
+        if (v.length < 4) return { ok: false, msg: 'This code is too short to be a serial number.' };
+        if (dup >= 0) return { ok: false, msg: `Panel ${dup + 1} already has this serial number (${v}). Scan panel ${i + 1}’s code.` };
+        putSerial(i, v);
+        return { ok: true, msg: `Panel ${i + 1}: ${v}` };
+      }
+    });
+  }
+  function scanAllSerials() {
+    const n = panelCount();
+    if (!emptyBoxes().length) { toast(`All ${n} boxes have a serial number. To scan one again, use the scan button in its box.`); return; }
+    scanner({
+      kind: 'serial', multi: true, title: 'Scan the panel serial numbers',
+      aim: () => `Panel ${emptyBoxes()[0] + 1} of ${n}: point the camera at the panel’s code. The camera stays open for the next panel.`,
+      accept(value) {
+        const v = serialOf(value), dup = sameAs(v, -1);
+        if (v.length < 4) return { ok: false, msg: 'This code is too short to be a serial number.' };
+        if (dup >= 0) return { ok: false, msg: `Already added as panel ${dup + 1}. Point the camera at the next panel.` };
+        const i = emptyBoxes()[0];
+        putSerial(i, v);
+        const left = emptyBoxes();
+        if (!left.length) return { ok: true, done: true, msg: `All ${n} panel serial numbers are filled.` };
+        return { ok: true, msg: `Panel ${i + 1}: ${v} ✓ Now panel ${left[0] + 1} of ${n}.` };
+      }
+    });
+  }
 
   form.addEventListener('input', e => {
     const t = e.target;
@@ -502,6 +813,12 @@ async function formView(id) {
   // GPS photos: start finding the location as the photo picker opens
   let gpsWait = null;
   form.addEventListener('click', async e => {
+    const sc = e.target.closest('[data-scan]');
+    if (sc) { scanField(fieldByKey[sc.dataset.scan]); return; }
+    const ss = e.target.closest('[data-scan-serial]');
+    if (ss) { scanSerial(Number(ss.dataset.scanSerial)); return; }
+    if (e.target.closest('[data-scanall]')) { scanAllSerials(); return; }
+
     const lab = e.target.closest('.photos.gps .add-photo');
     if (lab) gpsWait = getPosition().catch(err => err);
 
@@ -605,7 +922,8 @@ async function formView(id) {
     if (bad.length) {
       const w = wrapOf(bad[0].key);
       w.scrollIntoView({ block: 'center', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
-      const focusable = $('input:not(.vh), select, button', w) || $('input', w);
+      const focusable = (bad[0].type === 'serials' && ($$('[data-serial]', w).find(i => !i.value) || $('[data-serial]', w)))
+        || $('input:not(.vh), select, button', w) || $('input', w);
       if (focusable) setTimeout(() => focusable.focus({ preventScroll: true }), 300);
       return;
     }
@@ -680,8 +998,9 @@ async function doneView(id) {
   };
   $('#finish').onclick = async () => {
     const owner = session.user.phone;
-    if (d.section === 1) store.addRecent(owner, { name: d.values.name, consumer: d.values.consumer, mobile: d.values.mobile, mode: d.mode });
-    else store.markRecent(owner, d.values.consumer, { s2At: Date.now() });
+    // the Aadhaar number is kept only to fill Section 2, and removed once Section 2 is sent
+    if (d.section === 1) store.addRecent(owner, { name: d.values.name, consumer: d.values.consumer, mobile: d.values.mobile, mode: d.mode, aadhaar: d.values.aadhaar });
+    else store.markRecent(owner, d.values.consumer, { s2At: Date.now(), aadhaar: undefined });
     await store.deleteDraft(id);
     lastPdf = null;
     toast('Done. The client’s photos are removed from this phone.', 'good');

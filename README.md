@@ -4,8 +4,14 @@ Dealers fill a checked form for each client and send it to Pontis Energy as one 
 The Pontis office (admin) adds dealers and sends them their login on WhatsApp, and adds the received PDFs to the **Clients** tab to see each client and save their photos.
 
 - **One login screen.** The admin number and password come from the settings below; dealers are kept in a Cloudflare D1 database.
-- **Client details never reach the server.** They stay on the dealer's phone (IndexedDB) until the PDF is sent, then **Done** removes them. Unfinished forms are removed 30 days after they were last opened; the home screen warns in the last week.
+- **Client details never reach the server.** They stay on the dealer's phone (IndexedDB) until the PDF is sent, then **Done** removes them. Unfinished forms are removed 30 days after they were last opened; the home screen warns in the last week. After **Done** on Section 1, the phone keeps the client's name, consumer number, mobile and Aadhaar number to fill Section 2; the Aadhaar number is removed when Section 2 is sent.
 - **Section 1 (work start)**: Cash or Loan. Loan with age 60+ asks for a co-applicant. **Section 2 (after installation)**: panels (one serial box per panel, duplicates caught), inverter, energy meter.
+- **Section 2 from Section 1 in one tap**: **Start Section 2** lists the clients sent in Section 1 and still waiting for Section 2; choosing one fills their consumer number, name and Aadhaar number. If Section 2 was already started for that client, that form opens again instead of a second one.
+- **Scan instead of typing**: the Aadhaar, PAN, consumer number, inverter and meter serial boxes, and each panel's serial box, have a scan button inside the box. It opens the camera, or reads a photo or screenshot (**Choose a photo**). **Scan all panels** keeps the camera open and fills the empty panel boxes in order (a panel scanned twice is not added again).
+  - **Aadhaar**: old cards and letters have the full number in the QR code. New cards, e-Aadhaar and mAadhaar have the *secure QR code*, which holds only the last 4 digits (UIDAI leaves the full number out on purpose): the app says so, and then warns if the typed number does not end in those 4 digits. Both give the name and date of birth, which fill the name (and the age, on a loan) when those are still empty.
+  - **PAN**: read when the QR code shows the PAN as text. The newer PAN cards' QR code is locked (only the Income Tax Department's app reads it); the app then says to type the PAN.
+  - **KSEB bill**: the 13-digit consumer number is taken from the bill's QR code or barcode. **Serial numbers**: the code's text, or the "S/N" / "Serial No" in it. When a code holds several possible values, the dealer picks the right one.
+  - Android Chrome reads codes with its built-in reader. iPhones and computers use ZXing (`public/vendor/zxing`), which needs `'wasm-unsafe-eval'` in the Content-Security-Policy (`public/_headers`); it is fetched once and kept for offline use.
 - **Checks**: required fields, 10-digit mobile, Aadhaar 12 digits with its check digit, PAN format, email, consumer number (warns when not 13 digits).
 - **GPS photos** (rooftop; panels with customer) can come from the camera, the gallery or a computer. The location and time printed on the photo come from the GPS saved in the photo itself (phone camera with location on, or a GPS camera app); without it, from the device's location when the photo is added (marked "location when added" if the photo is older than 10 minutes). If neither is available (often on a computer), the photo is still added but marked **No GPS** on the screen and in the PDF.
 - **PDF** is made on the phone: a details table, then one page per photo. The typed details are also stored inside the PDF (`/PontisData`).
@@ -27,6 +33,9 @@ public/            the app (static files, installable, works offline)
   js/media.js      photo resize and GPS stamp
   js/store.js      drafts and photos on the phone
   js/office.js     Clients tab: reads PDFs, takes photos out, ZIP
+  js/scan.js       QR code / barcode reading: camera, photos, and the value for each field
+  vendor/zxing/    ZXing code reader for iPhones and computers (zxing-wasm 3.1.7, MIT; from the npm
+                   package: dist/es/share.js, dist/es/reader/index.js, dist/reader/zxing_reader.wasm)
 functions/api/     Cloudflare Pages Functions entry (/api/*)
 lib/server.js      logins, sessions, dealers (D1)
 ```
