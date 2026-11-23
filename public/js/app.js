@@ -307,7 +307,78 @@ function topBar(extra = '') {
     <div class="who"><span class="who-name">${esc(session.user.name)}</span><button class="btn ghost sm" type="button" data-logout>Log out</button></div>
   </header>`;
 }
+// ---------- PWA install button (removed once the app is installed) ----------
+const isIos = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches
+  || matchMedia('(display-mode: window-controls-overlay)').matches
+  || navigator.standalone === true
+  || document.referrer.startsWith('android-app://');
+let installEvent = null;
+let appInstalled = isStandalone();
+
+function canShowInstall() {
+  if (appInstalled || isStandalone()) return false;
+  return !!(installEvent || isIos);
+}
+function removeInstallUi() {
+  $$('[data-install-wrap]').forEach(el => el.remove());
+}
+function syncInstallUi() {
+  if (!canShowInstall()) { removeInstallUi(); return; }
+  const slot = $('[data-install-slot]');
+  if (!slot || $('[data-install-wrap]', slot)) return;
+  const auth = slot.dataset.installSlot === 'auth';
+  slot.innerHTML = auth
+    ? `<div class="install-auth" data-install-wrap><button class="btn block" type="button" data-install-app>${ICON.save} Install app</button></div>`
+    : `<div class="install-bar card" data-install-wrap><div class="install-copy"><b>Install Pontis app</b><span class="muted small">Add to your home screen for quick access.</span></div><button class="btn primary sm" type="button" data-install-app>${ICON.save} Install app</button></div>`;
+}
+async function triggerInstall(btn) {
+  if (appInstalled || isStandalone()) { removeInstallUi(); return; }
+  if (installEvent) {
+    const ev = installEvent;
+    installEvent = null;
+    busy(btn, true);
+    try {
+      await ev.prompt();
+      const { outcome } = await ev.userChoice;
+      if (outcome === 'accepted') {
+        appInstalled = true;
+        removeInstallUi();
+        return;
+      }
+    } catch (e) { /* prompt failed or already used */ }
+    busy(btn, false);
+    syncInstallUi();
+    return;
+  }
+  if (isIos) {
+    const m = openModal(`<h2 id="mTitle">Install Pontis app</h2>
+      <p class="muted">In Safari, tap <b>Share</b>, then tap <b>Add to Home Screen</b>.</p>
+      <div class="modal-actions"><button class="btn primary" type="button" data-ok>Got it</button></div>`);
+    $('[data-ok]', m).onclick = closeModal;
+  }
+}
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  appInstalled = false;
+  installEvent = e;
+  syncInstallUi();
+});
+window.addEventListener('appinstalled', () => {
+  appInstalled = true;
+  installEvent = null;
+  removeInstallUi();
+  toast('App installed.', 'good');
+});
+try {
+  matchMedia('(display-mode: standalone)').addEventListener('change', e => {
+    if (e.matches) { appInstalled = true; installEvent = null; removeInstallUi(); }
+  });
+} catch (e) { /* older Safari */ }
+
 document.addEventListener('click', async e => {
+  const inst = e.target.closest('[data-install-app]');
+  if (inst) { triggerInstall(inst); return; }
   if (e.target.closest('[data-logout]')) {
     const note = session && session.user.role === 'dealer'
       ? 'You will need your mobile number and password to log in again. Unfinished forms stay on this phone.'
@@ -327,20 +398,21 @@ function render() {
   if (current) { current(); current = null; }
   closeModal();
   const [view, arg] = route();
-  if (!session) { document.title = 'Log in – Pontis Energy'; return loginView(); }
-  if (session.user.role === 'admin') {
-    if (view === 'client' && arg) return clientView(decodeURIComponent(arg));
-    if (view === 'clients' || view === 'excel') return clientsView(); // "excel": the old address of this tab
-    if (view === 'staff') return staffView();
-    return dealersView();
+  if (!session) { document.title = 'Log in – Pontis Energy'; loginView(); }
+  else if (session.user.role === 'admin') {
+    if (view === 'client' && arg) clientView(decodeURIComponent(arg));
+    else if (view === 'clients' || view === 'excel') clientsView(); // "excel": the old address of this tab
+    else if (view === 'staff') staffView();
+    else dealersView();
+  } else if (session.user.role === 'staff') {
+    if (view === 'client' && arg) clientView(decodeURIComponent(arg));
+    else clientsView();
+  } else {
+    if (view === 'form' && arg) formView(arg);
+    else if (view === 'done' && arg) doneView(arg);
+    else homeView();
   }
-  if (session.user.role === 'staff') {
-    if (view === 'client' && arg) return clientView(decodeURIComponent(arg));
-    return clientsView();
-  }
-  if (view === 'form' && arg) return formView(arg);
-  if (view === 'done' && arg) return doneView(arg);
-  return homeView();
+  syncInstallUi();
 }
 
 // ---------- login ----------
@@ -359,6 +431,7 @@ function loginView() {
       <p class="form-err" id="loginErr" role="alert"></p>
       <button class="btn primary block" type="submit">Log in</button>
     </form>
+    <div data-install-slot="auth"></div>
     <p class="muted small center">Forgot the password? Ask Pontis Energy to reset it.</p>
   </main>`;
   loginNote = '';
@@ -413,6 +486,7 @@ async function homeView() {
   document.title = 'Pontis Energy – Dealer';
   const owner = session.user.phone;
   app.innerHTML = `${topBar()}<main class="wrap" id="main">
+    <div data-install-slot></div>
     <h1 class="hello">Hello, ${esc(session.user.name.split(' ')[0])}</h1>
     <div class="cards">
       <section class="card">
@@ -431,7 +505,6 @@ async function homeView() {
     </div>
     <section class="list-block" id="s1List" hidden><h2>Section 1</h2><ul class="items"></ul></section>
     <section class="list-block" id="s2List" hidden><h2>Section 2</h2><ul class="items"></ul></section>
-    <p class="install-tip" id="installTip" hidden></p>
   </main>`;
 
   // Each client's forms on this phone: unfinished ones (drafts) and sent ones. A Section 2 belongs to a
@@ -478,18 +551,6 @@ async function homeView() {
         ${meta(it.consumer && `Consumer ${it.consumer}`, it.d ? `saved ${ago(it.d.updatedAt)}` : `sent ${ago(it.c.s2At)}`)}
         <span class="item-tags">${state(!it.d)}</span>${it.d ? expiry(it.d) : ''}</div>
       <div class="item-acts">${it.d ? `<a class="btn sm" href="#/form/${esc(it.d.id)}">Continue</a>${delBtn(it.d)}` : delSentBtn(2, it.c)}</div></li>`).join('');
-  }
-
-  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
-  if (!standalone) {
-    const tip = $('#installTip');
-    const ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    tip.hidden = false;
-    tip.innerHTML = ios
-      ? 'Tip: install this app. In Safari tap <b>Share</b>, then <b>Add to Home Screen</b>.'
-      : (installEvent ? 'Tip: <button class="link" type="button" id="installBtn">install this app</button> to open it from your home screen.' : 'Tip: install this app from the browser menu (⋮) → <b>Install app</b> or <b>Add to Home screen</b>.');
-    const ib = $('#installBtn');
-    if (ib) ib.onclick = async () => { installEvent.prompt(); await installEvent.userChoice; installEvent = null; tip.hidden = true; };
   }
 
   // Section 2 from a Section 1 (unfinished or sent): its consumer number, name and Aadhaar number are filled in.
@@ -1183,6 +1244,7 @@ const officeBar = () => topBar(session.user.role === 'admin' ? adminTabs('client
 async function dealersView() {
   document.title = 'Dealers – Pontis Energy';
   app.innerHTML = `${topBar(adminTabs('dealers'))}<main class="wrap wide" id="main">
+    <div data-install-slot></div>
     <div class="head-row"><h1>Dealers</h1><button class="btn primary" type="button" id="addDealer">${ICON.plus} Add dealer</button></div>
     <div class="toolbar"><input type="search" id="q" placeholder="Search name, number or area…" aria-label="Search dealers" autocomplete="off">
     <span class="muted small" id="count" aria-live="polite"></span></div>
@@ -1332,6 +1394,7 @@ function showLogin(person, password, isReset, kind = 'dealer') {
 async function staffView() {
   document.title = 'Staff – Pontis Energy';
   app.innerHTML = `${topBar(adminTabs('staff'))}<main class="wrap wide" id="main">
+    <div data-install-slot></div>
     <div class="head-row"><h1>Staff</h1><button class="btn primary" type="button" id="addStaff">${ICON.plus} Add staff</button></div>
     <p class="muted small intro">Staff can only upload dealer PDFs and extract client details and photos. They cannot manage dealers or staff.</p>
     <div class="toolbar"><input type="search" id="q" placeholder="Search name, number or notes…" aria-label="Search staff" autocomplete="off">
@@ -1520,6 +1583,7 @@ function clientsView() {
   const st = { q: qp.get('q') || '', dealer: qp.get('dealer') || '', status: qp.get('status') || '', type: qp.get('type') || '', sort: qp.get('sort') || 'new' };
   const selected = new Set();
   app.innerHTML = `${officeBar()}<main class="wrap wide drop-page" id="main">
+    <div data-install-slot></div>
     <div class="head-row"><h1>Clients</h1>${addPdfButton()}</div>
     <p class="muted small intro">Save the PDFs dealers send on WhatsApp, then add them here or drop them on this page.</p>
     <div id="addMsg" aria-live="polite"></div>
@@ -1808,8 +1872,6 @@ async function savePdfFile(blob, name) {
 }
 
 // ---------- start ----------
-let installEvent = null;
-window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvent = e; });
 if (!location.hash) history.replaceState(null, '', '#/');
 render();
 let lastCheck = 0;
