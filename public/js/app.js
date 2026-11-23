@@ -1,6 +1,7 @@
 // Pontis Energy dealer app
-// One login screen. The Pontis office (admin) manages dealers; dealers fill client forms that become a PDF
-// they send on WhatsApp. Client details stay on the dealer's phone until sent, and never reach the server.
+// One login screen. The Pontis office (admin) manages dealers and staff; staff only upload dealer PDFs and
+// extract client details and photos; dealers fill client forms that become a PDF they send on WhatsApp.
+// Client details stay on the device and never reach the server.
 
 import { SECTIONS, activeFields, needsCoApplicant, check, note, tidy, display, isPhoto, normMobile, printable } from './fields.js';
 import * as store from './store.js';
@@ -308,7 +309,10 @@ function topBar(extra = '') {
 }
 document.addEventListener('click', async e => {
   if (e.target.closest('[data-logout]')) {
-    if (await confirmBox('Log out?', 'You will need your mobile number and password to log in again. Unfinished forms stay on this phone.', 'Log out')) logout();
+    const note = session && session.user.role === 'dealer'
+      ? 'You will need your mobile number and password to log in again. Unfinished forms stay on this phone.'
+      : 'You will need your mobile number and password to log in again. Added PDFs stay on this device.';
+    if (await confirmBox('Log out?', note, 'Log out')) logout();
   }
 });
 
@@ -327,7 +331,12 @@ function render() {
   if (session.user.role === 'admin') {
     if (view === 'client' && arg) return clientView(decodeURIComponent(arg));
     if (view === 'clients' || view === 'excel') return clientsView(); // "excel": the old address of this tab
+    if (view === 'staff') return staffView();
     return dealersView();
+  }
+  if (session.user.role === 'staff') {
+    if (view === 'client' && arg) return clientView(decodeURIComponent(arg));
+    return clientsView();
   }
   if (view === 'form' && arg) return formView(arg);
   if (view === 'done' && arg) return doneView(arg);
@@ -1166,9 +1175,11 @@ async function doneView(id) {
 
 // ---------- admin: dealers ----------
 let dealerCache = [];
+let staffCache = [];
 function adminTabs(active) {
-  return `<nav class="tabs" aria-label="Admin"><a href="#/" ${active === 'dealers' ? 'aria-current="page"' : ''}>Dealers</a><a href="#/clients" ${active === 'clients' ? 'aria-current="page"' : ''}>Clients</a></nav>`;
+  return `<nav class="tabs" aria-label="Admin"><a href="#/" ${active === 'dealers' ? 'aria-current="page"' : ''}>Dealers</a><a href="#/staff" ${active === 'staff' ? 'aria-current="page"' : ''}>Staff</a><a href="#/clients" ${active === 'clients' ? 'aria-current="page"' : ''}>Clients</a></nav>`;
 }
+const officeBar = () => topBar(session.user.role === 'admin' ? adminTabs('clients') : '');
 async function dealersView() {
   document.title = 'Dealers – Pontis Energy';
   app.innerHTML = `${topBar(adminTabs('dealers'))}<main class="wrap wide" id="main">
@@ -1293,13 +1304,18 @@ function dealerForm(x, reload) {
 }
 
 // Shows the login details once, with a WhatsApp button that opens the chat with the message ready
-function showLogin(dealer, password, isReset) {
+function showLogin(person, password, isReset, kind = 'dealer') {
   const link = location.origin + '/';
-  const msg = `Hello ${dealer.name},\n\n${isReset ? 'Your new login for the Pontis Energy dealer app:' : 'Welcome to the Pontis Energy dealer app. Your login:'}\n\nApp: ${link}\nMobile number: ${prettyPhone(dealer.phone)}\nPassword: ${password}\n\nOpen the link and log in. Then add the app to your home screen (Share > Add to Home Screen on iPhone, or the menu > Install app on Android).`;
-  const wa = `https://wa.me/91${dealer.phone}?text=${encodeURIComponent(msg)}`;
-  const m = openModal(`<h2 id="mTitle">${isReset ? 'New password' : 'Dealer added'}: ${esc(dealer.name)}</h2>
-    <p class="muted">Send these login details to the dealer now. The password is shown only this once; if it is lost, use <b>Reset password</b>.</p>
-    <dl class="creds"><dt>Mobile number</dt><dd>${esc(prettyPhone(dealer.phone))}</dd><dt>Password</dt><dd class="mono big" translate="no">${esc(password)}</dd></dl>
+  const isStaff = kind === 'staff';
+  const msg = isStaff
+    ? `Hello ${person.name},\n\n${isReset ? 'Your new staff login for the Pontis Energy app:' : 'Welcome to Pontis Energy. Your staff login to open dealer PDFs and extract client details and photos:'}\n\nApp: ${link}\nMobile number: ${prettyPhone(person.phone)}\nPassword: ${password}\n\nOpen the link and log in.`
+    : `Hello ${person.name},\n\n${isReset ? 'Your new login for the Pontis Energy dealer app:' : 'Welcome to the Pontis Energy dealer app. Your login:'}\n\nApp: ${link}\nMobile number: ${prettyPhone(person.phone)}\nPassword: ${password}\n\nOpen the link and log in. Then add the app to your home screen (Share > Add to Home Screen on iPhone, or the menu > Install app on Android).`;
+  const wa = `https://wa.me/91${person.phone}?text=${encodeURIComponent(msg)}`;
+  const who = isStaff ? 'staff member' : 'dealer';
+  const addedTitle = isStaff ? 'Staff added' : 'Dealer added';
+  const m = openModal(`<h2 id="mTitle">${isReset ? 'New password' : addedTitle}: ${esc(person.name)}</h2>
+    <p class="muted">Send these login details to the ${who} now. The password is shown only this once; if it is lost, use <b>Reset password</b>.</p>
+    <dl class="creds"><dt>Mobile number</dt><dd>${esc(prettyPhone(person.phone))}</dd><dt>Password</dt><dd class="mono big" translate="no">${esc(password)}</dd></dl>
     <div class="stack">
       <a class="btn wa block" href="${esc(wa)}" target="_blank" rel="noopener" id="waSend">${ICON.wa} Send on WhatsApp</a>
       <button class="btn block" type="button" id="copyCreds">Copy the message</button>
@@ -1310,6 +1326,122 @@ function showLogin(dealer, password, isReset) {
     try { await navigator.clipboard.writeText(msg); toast('Copied.', 'good'); } catch (e) { toast('Could not copy. Use the WhatsApp button instead.', 'bad'); }
   };
   $('[data-close]', m).onclick = closeModal;
+}
+
+// ---------- admin: staff (PDF upload & data extraction only) ----------
+async function staffView() {
+  document.title = 'Staff – Pontis Energy';
+  app.innerHTML = `${topBar(adminTabs('staff'))}<main class="wrap wide" id="main">
+    <div class="head-row"><h1>Staff</h1><button class="btn primary" type="button" id="addStaff">${ICON.plus} Add staff</button></div>
+    <p class="muted small intro">Staff can only upload dealer PDFs and extract client details and photos. They cannot manage dealers or staff.</p>
+    <div class="toolbar"><input type="search" id="q" placeholder="Search name, number or notes…" aria-label="Search staff" autocomplete="off">
+    <span class="muted small" id="count" aria-live="polite"></span></div>
+    <ul class="dealers" id="staffList"><li class="muted">Loading…</li></ul>
+  </main>`;
+  const listEl = $('#staffList'), q = $('#q');
+  const draw = () => {
+    const term = q.value.trim().toLowerCase();
+    const items = staffCache.filter(x => !term || `${x.name} ${x.phone} ${x.notes}`.toLowerCase().includes(term));
+    const active = staffCache.filter(x => x.active).length;
+    $('#count').textContent = staffCache.length ? `${plural(staffCache.length, 'staff member', 'staff members')} · ${active} active` : '';
+    if (!staffCache.length) {
+      listEl.innerHTML = `<li class="empty card"><h2>No staff yet</h2><p class="muted">Add a staff member to upload dealer PDFs and extract client details and photos. The app makes a password, and you send the login details on WhatsApp in one tap.</p></li>`;
+      return;
+    }
+    listEl.innerHTML = items.length ? items.map(x => `<li class="dealer card${x.active ? '' : ' off'}">
+      <div class="dealer-main"><b>${esc(x.name)}</b>
+        <span class="muted small">${esc(prettyPhone(x.phone))}</span>
+        ${x.notes ? `<span class="muted small clamp">${esc(x.notes)}</span>` : ''}</div>
+      <span class="pill ${x.active ? 'ok' : 'off'}">${x.active ? 'Active' : 'Blocked'}</span>
+      <div class="dealer-acts">
+        <button class="btn sm" type="button" data-act="edit" data-id="${x.id}">Edit…</button>
+        <button class="btn sm" type="button" data-act="reset" data-id="${x.id}">Reset password…</button>
+        <button class="btn sm" type="button" data-act="toggle" data-id="${x.id}">${x.active ? 'Block…' : 'Unblock'}</button>
+        <button class="btn sm ghost danger-text" type="button" data-act="delete" data-id="${x.id}">Delete…</button>
+      </div></li>`).join('') : `<li class="muted">No staff member matches “${esc(q.value)}”.</li>`;
+  };
+  const load = async () => {
+    try { staffCache = (await api('staff')).staff; draw(); }
+    catch (err) { if (err.status !== 401) listEl.innerHTML = `<li class="card err-card">${esc(err.message)} <button class="btn sm" type="button" id="retry">Try again</button></li>`; const r = $('#retry'); if (r) r.onclick = load; }
+  };
+  q.addEventListener('input', draw);
+  $('#addStaff').onclick = () => staffForm(null, load);
+  listEl.onclick = async e => {
+    const b = e.target.closest('[data-act]'); if (!b) return;
+    const x = staffCache.find(y => y.id === Number(b.dataset.id)); if (!x) return;
+    if (b.dataset.act === 'edit') staffForm(x, load);
+    if (b.dataset.act === 'reset') {
+      if (!await confirmBox(`Reset ${x.name}’s password?`, 'A new password is made and the old one stops working. They are logged out until they use the new one.', 'Reset password')) return;
+      busy(b, true);
+      try { const r = await api(`staff/${x.id}/reset`, { method: 'POST', body: {} }); showLogin(r.staff, r.password, true, 'staff'); load(); }
+      catch (err) { toast(err.message, 'bad'); }
+      busy(b, false);
+    }
+    if (b.dataset.act === 'toggle') {
+      if (x.active && !await confirmBox(`Block ${x.name}?`, 'They are logged out and cannot log in until you unblock them.', 'Block', true)) return;
+      busy(b, true);
+      try { await api(`staff/${x.id}`, { method: 'PUT', body: { active: !x.active } }); toast(x.active ? `${x.name} is blocked.` : `${x.name} can log in again.`, 'good'); await load(); }
+      catch (err) { toast(err.message, 'bad'); busy(b, false); }
+    }
+    if (b.dataset.act === 'delete') {
+      if (!await confirmBox(`Delete ${x.name}?`, 'They can no longer log in, and this cannot be undone. PDFs already saved on devices are not affected. To stop them for a while, use Block instead.', 'Delete', true)) return;
+      busy(b, true);
+      try { await api(`staff/${x.id}`, { method: 'DELETE' }); toast(`${x.name} is deleted.`); await load(); }
+      catch (err) { toast(err.message, 'bad'); busy(b, false); }
+    }
+  };
+  load();
+}
+
+function staffForm(x, reload) {
+  const isNew = !x;
+  const m = openModal(`<h2 id="mTitle">${isNew ? 'Add staff' : `Edit ${esc(x.name)}`}</h2>
+    <form id="staffForm" novalidate>
+      <label class="fld"><span>Name</span><input name="name" value="${esc(x ? x.name : '')}" autocomplete="off" autocapitalize="words" required></label>
+      <p class="err" data-err="name" aria-live="polite"></p>
+      <label class="fld"><span>Mobile number (their login and WhatsApp)</span><input name="phone" type="tel" inputmode="numeric" value="${esc(x ? prettyPhone(x.phone) : '')}" autocomplete="off" placeholder="98470 12345…" required></label>
+      <p class="err" data-err="phone" aria-live="polite"></p>
+      <label class="fld"><span>Notes <span class="opt">(optional)</span></span><textarea name="notes" rows="2" placeholder="Office desk, branch…">${esc(x ? x.notes : '')}</textarea></label>
+      ${isNew ? `<label class="fld"><span>Password <span class="opt">(optional)</span></span><input name="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Leave empty to make one automatically…" class="mono"></label>
+      <p class="err" data-err="password" aria-live="polite"></p>` : ''}
+      <p class="form-err" id="sfErr" role="alert"></p>
+      <div class="modal-actions"><button class="btn" type="button" data-cancel>Cancel</button><button class="btn primary" type="submit">${isNew ? 'Add staff' : 'Save'}</button></div>
+    </form>`);
+  const f = $('#staffForm', m);
+  $('[data-cancel]', m).onclick = closeModal;
+  f.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.target.tagName === 'TEXTAREA') f.requestSubmit(); });
+  f.addEventListener('submit', async e => {
+    e.preventDefault();
+    $$('[data-err]', f).forEach(p => { p.textContent = ''; });
+    $$('input', f).forEach(i => i.classList.remove('invalid'));
+    $('#sfErr', f).textContent = '';
+    const body = { name: f.name.value.trim(), phone: f.phone.value.trim(), notes: f.notes.value.trim() };
+    if (isNew && f.password.value.trim()) body.password = f.password.value.trim();
+    const errs = {};
+    if (body.name.length < 2) errs.name = 'Enter the staff member’s name.';
+    if (!/^[6-9]\d{9}$/.test(normMobile(body.phone))) errs.phone = 'Enter a 10-digit mobile number.';
+    const showErrs = fields => {
+      Object.entries(fields).forEach(([k, msg]) => { const p = $(`[data-err="${k}"]`, f); if (p) p.textContent = msg; if (f[k]) f[k].classList.add('invalid'); });
+      const firstKey = Object.keys(fields)[0]; if (f[firstKey]) f[firstKey].focus();
+    };
+    if (Object.keys(errs).length) { showErrs(errs); return; }
+    const btn = f.querySelector('[type=submit]');
+    busy(btn, true);
+    try {
+      if (isNew) {
+        const r = await api('staff', { method: 'POST', body });
+        reload();
+        showLogin(r.staff, r.password, false, 'staff');
+      } else {
+        await api(`staff/${x.id}`, { method: 'PUT', body });
+        closeModal(); toast('Saved.', 'good'); reload();
+      }
+    } catch (err) {
+      busy(btn, false);
+      if (err.data && err.data.fields) showErrs(err.data.fields);
+      else $('#sfErr', f).textContent = err.message;
+    }
+  });
 }
 
 // ---------- admin: clients (from the PDFs dealers send) ----------
@@ -1387,7 +1519,7 @@ function clientsView() {
   clientsView.query = qp.toString() ? `?${qp}` : '';
   const st = { q: qp.get('q') || '', dealer: qp.get('dealer') || '', status: qp.get('status') || '', type: qp.get('type') || '', sort: qp.get('sort') || 'new' };
   const selected = new Set();
-  app.innerHTML = `${topBar(adminTabs('clients'))}<main class="wrap wide drop-page" id="main">
+  app.innerHTML = `${officeBar()}<main class="wrap wide drop-page" id="main">
     <div class="head-row"><h1>Clients</h1>${addPdfButton()}</div>
     <p class="muted small intro">Save the PDFs dealers send on WhatsApp, then add them here or drop them on this page.</p>
     <div id="addMsg" aria-live="polite"></div>
@@ -1539,7 +1671,7 @@ async function clientView(key) {
 
   const valueHtml = v => /^https?:\/\/\S+/.test(v)
     ? `<a href="${esc(v.split(' ')[0])}" target="_blank" rel="noopener">${esc(v)}</a>` : esc(v || '—');
-  app.innerHTML = `${topBar(adminTabs('clients'))}<main class="wrap" id="main">
+  app.innerHTML = `${officeBar()}<main class="wrap" id="main">
     <a class="back-link" href="${esc(back)}">${ICON.back} All clients</a>
     <div class="client-head">
       <div class="client-title"><h1 class="client-name">${esc(c.name)}</h1>
@@ -1680,11 +1812,26 @@ let installEvent = null;
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvent = e; });
 if (!location.hash) history.replaceState(null, '', '#/');
 render();
+let lastCheck = 0;
+function checkSession() {
+  if (!session) return;
+  lastCheck = Date.now();
+  const prevRole = session.user.role, prevName = session.user.name;
+  api('me').then(r => {
+    if (!session) return;
+    setSession({ token: r.token, user: r.user });
+    if (r.user.role !== prevRole) render();
+    else if (r.user.name !== prevName) { const el = $('.who-name'); if (el) el.textContent = r.user.name; }
+  }).catch(() => { /* offline: keep working; 401 logs out in api() */ });
+}
 if (session) {
-  api('me').then(r => { setSession({ token: r.token, user: r.user }); }).catch(() => { /* offline: keep working */ });
+  checkSession();
   store.cleanUp();
   store.keepStorage();
 }
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && session && Date.now() - lastCheck > 5 * 60 * 1000) checkSession();
+});
 if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
   // A new release is fetched in the background. Switch to it when nothing is being typed or made,
   // so a form is never lost; otherwise it is used the next time the app opens.

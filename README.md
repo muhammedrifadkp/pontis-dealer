@@ -1,9 +1,9 @@
 # Pontis Energy dealer app
 
 Dealers fill a checked form for each client and send it to Pontis Energy as one PDF on WhatsApp.
-The Pontis office (admin) adds dealers and sends them their login on WhatsApp, and adds the received PDFs to the **Clients** tab to see each client and save their photos.
+The Pontis office (admin) adds dealers and staff and sends them their login on WhatsApp, and adds received PDFs to the **Clients** tab to see each client and save their photos. Staff accounts can only upload received dealer PDFs and extract client details and photos.
 
-- **One login screen.** The admin number and password come from the settings below; dealers are kept in a Cloudflare D1 database.
+- **One login screen.** The admin number and password come from the settings below; dealers and staff are kept in a Cloudflare D1 database.
 - **Client details never reach the server.** They stay on the dealer's phone (IndexedDB) until the PDF is sent, then **Done** removes them. Unfinished forms are removed 30 days after they were last opened; the home screen warns in the last week. After **Done** on Section 1, the phone keeps the client's name, consumer number, mobile and Aadhaar number to fill Section 2; the Aadhaar number is removed when Section 2 is sent.
 - **Section 1 (work start)**: Cash or Loan. Loan with age 60+ asks for a co-applicant. **Section 2 (after installation)**: panels (one serial box per panel, duplicates caught), inverter, energy meter.
 - **Home screen**: two lists, **Section 1** and **Section 2**, each with the forms not sent yet first, then the ones sent.
@@ -20,13 +20,14 @@ The Pontis office (admin) adds dealers and sends them their login on WhatsApp, a
 - **Checks**: required fields, 10-digit mobile, Aadhaar 12 digits with its check digit, PAN format, email, consumer number (warns when not 13 digits).
 - **GPS photos** (rooftop; panels with customer) can come from the camera, the gallery or a computer. The location and time printed on the photo come from the GPS saved in the photo itself (phone camera with location on, or a GPS camera app); without it, from the device's location when the photo is added (marked "location when added" if the photo is older than 10 minutes). If neither is available (often on a computer), the photo is still added but marked **No GPS** on the screen and in the PDF.
 - **PDF** is made on the phone: a details table, then one page per photo. The typed details are also stored inside the PDF (`/PontisData`).
-- **Clients tab (admin)**: add the PDFs dealers send (choose or drop many at once). Forms are grouped by consumer number, so Section 1 and Section 2 of a client show together.
+- **Staff tab (admin)**: add office staff who only upload dealer PDFs and extract client details and photos. Staff cannot view or manage dealers or other staff, and cannot create dealer forms.
+- **Clients tab (admin & staff)**: add the PDFs dealers send (choose or drop many at once). Forms are grouped by consumer number, so Section 1 and Section 2 of a client show together.
   - Counts at the top (all, waiting for Section 2, installed) also work as filters; search by name, consumer number, mobile or Ref; filter by dealer and Cash / Loan; sort by date, name or dealer. Filters are kept in the address, so Back returns to the same list. Each dealer on the Dealers tab links to their clients.
   - Each client: open the Section 1 / 2 PDF, delete; or tick several and delete them together.
   - A client's page: all details (with copy buttons), call the customer, WhatsApp the dealer, open or save each PDF, and every photo taken out of the PDF unchanged: view large (Previous / Next), **Save** one, or **Save all** (one ZIP on a computer; the share sheet on a phone, to save them to the gallery).
   - The PDFs are kept on that device (IndexedDB) until deleted; the footer shows how much space they use.
 - Fields are listed in `public/js/fields.js`; change them there.
-- Logins: 10 wrong passwords lock that number for 5 minutes on that connection only, so nobody can lock the office out by typing wrong passwords for its number. 50 wrong passwords for one number within 15 minutes, from anywhere, lock it for 15 minutes. A login lasts 30 days and is renewed while the app is used. Blocking, deleting or resetting a dealer logs them out.
+- Logins: 10 wrong passwords lock that number for 5 minutes on that connection only, so nobody can lock the office out by typing wrong passwords for its number. 50 wrong passwords for one number within 15 minutes, from anywhere, lock it for 15 minutes. A login lasts 30 days and is renewed while the app is used. Blocking, deleting or resetting a dealer or staff member logs them out.
 
 ## Files
 

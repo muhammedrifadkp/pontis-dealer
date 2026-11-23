@@ -355,8 +355,10 @@ body.modal-open{overflow:hidden}
   .items .item-acts{margin-left:auto}
 }
 @media (max-width:420px){
-  .tabs{margin-left:2px}
-  .tabs a{padding:0 9px;font-size:13.5px}
+  .bar.has-tabs{gap:6px}
+  .tabs{margin-left:0;gap:2px}
+  .tabs a{padding:0 8px;font-size:13.5px}
+  .bar.has-tabs .who .btn{padding:6px 8px}
   .brand span{display:none}
 }
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
