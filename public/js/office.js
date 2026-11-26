@@ -76,8 +76,10 @@ export async function extractPhotos(pdfBlob) {
     const imgObj = xo.get(used[0]), meta = objText(imgObj), data = stream(imgObj);
     if (!data || !/\/DCTDecode/.test(meta)) continue;
     const title = content.match(/\/F2 13 Tf [^\n]*?\(((?:\\.|[^\\)])*)\) Tj/);
+    const gpsMatch = content.match(/\/F2 8\.5 Tf [^\n]*?\((GPS:(?:\\.|[^\\)])*)\) Tj/);
     photos.push({
       label: title ? pdfString(title[1]) : `Photo ${photos.length + 1}`,
+      gpsLine: gpsMatch ? pdfString(gpsMatch[1]) : '',
       page: pageNo,
       w: +((meta.match(/\/Width (\d+)/) || [])[1] || 0), h: +((meta.match(/\/Height (\d+)/) || [])[1] || 0),
       blob: new Blob([bytes.subarray(data[0], data[0] + data[1])], { type: 'image/jpeg' })
@@ -102,7 +104,7 @@ export function pickGeoPhotos(photos) {
     if (!label) continue;
     const target = norm(label);
     const hit = photos.find(p => norm(p.label) === target || norm(p.label).startsWith(`${target} (`));
-    if (hit) found.push(hit);
+    if (hit) found.push({ ...hit, key });
     else missing.push(label);
   }
   return { found, missing };

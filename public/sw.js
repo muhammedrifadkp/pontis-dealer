@@ -2,7 +2,7 @@
 // signal, and forms and PDFs work without internet. Logins (/api) always go to the server.
 // Raise VERSION with every release: phones then fetch the new files in the background and switch to
 // them together (the open app reloads itself when no form is open, otherwise on the next start).
-const VERSION = '2026.11.26-2';
+const VERSION = '2026.11.27-1';
 const CACHE = `pontis-dealer-${VERSION}`;
 // The QR code reader (about 1 MB) is kept apart, so phones fetch it again only when it changes, not with every release
 const VENDOR = 'pontis-vendor-zxing-3.1.7';
@@ -10,7 +10,7 @@ const VENDOR_FILES = ['vendor/zxing/reader/index.js', 'vendor/zxing/share.js', '
 const PAGE = './'; // the app page (Cloudflare only redirects index.html to it, and a redirect cannot open the app)
 const FILES = [
   PAGE, 'app.css', 'manifest.webmanifest',
-  'js/app.js', 'js/fields.js', 'js/store.js', 'js/media.js', 'js/pdf.js', 'js/office.js', 'js/scan.js',
+  'js/app.js', 'js/fields.js', 'js/store.js', 'js/media.js', 'js/pdf.js', 'js/office.js', 'js/geo.js', 'js/scan.js',
   'assets/logo.png', 'assets/icon.png',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-64.png',
   ...['400', '500', '600', '700'].map(w => `fonts/noto-sans-latin-${w}-normal.woff2`),

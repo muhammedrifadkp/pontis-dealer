@@ -9,6 +9,7 @@ import * as scan from './scan.js';
 import { preparePhoto, getPosition, readExifGps, fmtCoord } from './media.js';
 import { buildClientPdf } from './pdf.js';
 import { readPdfFiles, groupClients, clientKey, extractPhotos, pickGeoPhotos, geoPdfName, buildGeoPdfFromPhotos, savePhotos, fileName, download } from './office.js';
+import { formatGeoDate, validCoord, parseCoords, parsePdfGpsLine, parsePastedLocation, buildMiniMap, drawGeoPhoto, renderGeoPhotoBlob, loadImgFromBlob } from './geo.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -400,12 +401,14 @@ function render() {
   const [view, arg] = route();
   if (!session) { document.title = 'Log in – Pontis Energy'; loginView(); }
   else if (session.user.role === 'admin') {
-    if (view === 'client' && arg) clientView(decodeURIComponent(arg));
+    if (view === 'geo' && arg) geoView(decodeURIComponent(arg));
+    else if (view === 'client' && arg) clientView(decodeURIComponent(arg));
     else if (view === 'clients' || view === 'excel') clientsView(); // "excel": the old address of this tab
     else if (view === 'staff') staffView();
     else dealersView();
   } else if (session.user.role === 'staff') {
-    if (view === 'client' && arg) clientView(decodeURIComponent(arg));
+    if (view === 'geo' && arg) geoView(decodeURIComponent(arg));
+    else if (view === 'client' && arg) clientView(decodeURIComponent(arg));
     else clientsView();
   } else {
     if (view === 'form' && arg) formView(arg);
@@ -1566,41 +1569,12 @@ async function openPdf(ref, name) {
   setTimeout(() => URL.revokeObjectURL(u), 120000);
 }
 const pdfName = (c, r) => `${fileName(`${c.name}${c.consumer ? ` - ${c.consumer}` : ''} - Section ${r.section}`)}.pdf`;
-
-// Builds and saves the 3-photo "<Customer Name> GEO.pdf" from a Section 2 PDF in one click
-async function exportGeoPdf(c, r, btn, existingPhotos = null) {
-  if (!r || r.section !== 2) return;
-  if (btn) busy(btn, true);
-  try {
-    let list = existingPhotos;
-    if (!list) {
-      const pdf = await store.getOfficePdf(r.ref).catch(() => null);
-      if (!pdf) { toast('This Section 2 PDF is not on this device. Add it again from WhatsApp.', 'bad'); return; }
-      list = await extractPhotos(pdf);
-    }
-    const { found, missing } = pickGeoPhotos(list);
-    if (!found.length) {
-      toast('Could not find the GEO photos in this Section 2 PDF.', 'bad');
-      return;
-    }
-    if (missing.length) {
-      const ok = await confirmBox(
-        'Some GEO photos are missing',
-        `This Section 2 PDF does not have: ${missing.join(', ')}. Make the GEO PDF with the ${plural(found.length, 'available photo', 'available photos')} anyway?`,
-        'Make GEO PDF'
-      );
-      if (!ok) return;
-    }
-    const name = geoPdfName(c);
-    const blob = await buildGeoPdfFromPhotos(found, name);
-    const how = await savePdfFile(blob, name);
-    if (how !== 'cancelled') toast(`${name} ready.`, 'good');
-  } catch (err) {
-    toast('Could not make the GEO PDF.', 'bad');
-  } finally {
-    if (btn) busy(btn, false);
-  }
-}
+const geoRoute = (key, ref, from = '') => {
+  const p = new URLSearchParams();
+  if (ref) p.set('ref', ref);
+  if (from) p.set('from', from);
+  return `#/geo/${encodeURIComponent(key)}${p.toString() ? `?${p}` : ''}`;
+};
 
 async function deleteClients(clients) {
   const n = clients.length, forms = clients.reduce((a, c) => a + c.rows.length, 0);
@@ -1749,7 +1723,7 @@ function clientsView() {
     const op = e.target.closest('[data-open]');
     if (op) { const c = clients.find(x => x.key === op.dataset.key), r = c.rows.find(x => x.ref === op.dataset.open); openPdf(r.ref, pdfName(c, r)); return; }
     const geo = e.target.closest('[data-geopdf]');
-    if (geo) { const c = clients.find(x => x.key === geo.dataset.key), r = c && c.rows.find(x => x.ref === geo.dataset.geopdf); exportGeoPdf(c, r, geo); return; }
+    if (geo) { go(geoRoute(geo.dataset.key, geo.dataset.geopdf, 'list')); return; }
     const del = e.target.closest('[data-del]');
     if (del) { if (await deleteClients([clients.find(x => x.key === del.dataset.del)])) load(); return; }
     if (e.target.closest('#selNone')) { selected.clear(); $$('[data-pick]').forEach(i => { i.checked = false; i.closest('.client').classList.remove('picked'); }); drawSel(); return; }
@@ -1879,7 +1853,7 @@ async function clientView(key) {
       return;
     }
     const geo = e.target.closest('[data-geopdf]');
-    if (geo) { exportGeoPdf(c, r, geo, list.length ? list : null); return; }
+    if (geo) { go(geoRoute(c.key, r.ref, 'client')); return; }
     const view = e.target.closest('[data-view]');
     if (view) { viewer(list, Number(view.dataset.view)); return; }
     const save = e.target.closest('[data-save]');
@@ -1913,6 +1887,372 @@ async function savePdfFile(blob, name) {
   return 'downloaded';
 }
 
+// ---------- staff/admin: GEO PDF editor ----------
+// Opens when clicking "GEO PDF" on a Section 2 client. Auto-fills location from Section 2 GPS & Section 1,
+// lets staff paste/edit location for Image 1 (panels) & Image 2 (inverter work) with live preview, and exports
+// the 3-page full-bleed "<Customer Name> GEO.pdf" (Page 3 inverter serial stays clean without overlay).
+async function geoView(key) {
+  const rows = (await store.listOffice().catch(() => [])).filter(r => clientKey(r) === key);
+  if (!rows.length) { go('#/clients'); return; }
+  const c = groupClients(rows)[0];
+  const qp = routeQuery();
+  const wantRef = qp.get('ref') || '';
+  const r = (wantRef && c.rows.find(x => x.ref === wantRef && x.section === 2)) || c.s2;
+  const back = qp.get('from') === 'list' ? `#/clients${clientsView.query || ''}` : `#/client/${encodeURIComponent(c.key)}`;
+  if (!r) { toast('Section 2 is not available for this client yet.', 'bad'); go(back); return; }
+
+  document.title = `GEO PDF – ${c.name} – Pontis Energy`;
+  app.innerHTML = `${officeBar()}<main class="wrap wide geo-page" id="main">
+    <a class="back-link" href="${esc(back)}">${ICON.back} ${qp.get('from') === 'list' ? 'All clients' : esc(c.name)}</a>
+    <div class="head-row geo-head">
+      <div><h1>GEO PDF Editor</h1><p class="muted small">${esc(c.name)}${c.consumer ? ` · Consumer <span class="mono">${esc(c.consumer)}</span>` : ''}</p></div>
+      <button class="btn primary" type="button" id="geoDownload" disabled>${ICON.save} Download GEO PDF</button>
+    </div>
+    <div id="geoBody"><p class="muted">Loading Section 2 photos…</p></div>
+  </main>`;
+
+  let alive = true;
+  let mapTimer = null;
+  current = () => { alive = false; clearTimeout(mapTimer); };
+
+  const pdf = await store.getOfficePdf(r.ref).catch(() => null);
+  if (!alive) return;
+  if (!pdf) {
+    $('#geoBody').innerHTML = `<div class="card"><p class="note bad">The Section 2 PDF is not on this device. Add it again from WhatsApp first.</p>
+      <a class="btn" href="${esc(back)}">Go back</a></div>`;
+    return;
+  }
+
+  const allPhotos = await extractPhotos(pdf).catch(() => []);
+  if (!alive) return;
+  const { found, missing } = pickGeoPhotos(allPhotos);
+  if (!found.length) {
+    $('#geoBody').innerHTML = `<div class="card"><p class="note bad">Could not find the GEO photos inside this Section 2 PDF.</p>
+      <a class="btn" href="${esc(back)}">Go back</a></div>`;
+    return;
+  }
+
+  // Decode each photo once so live canvas previews redraw smoothly on every edit
+  const loaded = [];
+  for (const p of found) {
+    try { loaded.push({ ...p, img: await loadImgFromBlob(p.blob) }); }
+    catch { loaded.push({ ...p, img: null }); }
+  }
+  if (!alive) return;
+
+  const p1 = loaded.find(p => p.key === 'panelsGps') || null;
+  const p2 = loaded.find(p => p.key === 'inverterWorkPhoto') || null;
+  const p1Gps = p1 ? parsePdfGpsLine(p1.gpsLine) : null;
+  const s1Loc = c.s1 && c.s1.fields ? String(c.s1.fields.location || '').trim() : '';
+  const s1Landmark = c.s1 && c.s1.fields ? String(c.s1.fields.landmark || '').trim() : '';
+  const s1Coords = parseCoords(s1Loc);
+  const s1Url = (s1Loc.match(/https?:\/\/\S+/i) || [])[0] || '';
+
+  const initLat = (p1Gps && p1Gps.lat) || (s1Coords && s1Coords.lat) || '';
+  const initLng = (p1Gps && p1Gps.lng) || (s1Coords && s1Coords.lng) || '';
+  const initDate = (p1Gps && p1Gps.dateTime) || formatGeoDate(r.createdAt);
+  const makeCfg = () => ({ enabled: true, showMap: true, dateTime: initDate, place: s1Landmark, address: '', lat: initLat, lng: initLng });
+
+  const state = {
+    outName: geoPdfName(c),
+    shared: true,
+    activeKey: p1 ? 'panelsGps' : 'inverterWorkPhoto',
+    cfg: { panelsGps: makeCfg(), inverterWorkPhoto: makeCfg() }
+  };
+  const activeCfg = () => state.cfg[state.shared ? 'panelsGps' : state.activeKey];
+  const cfgFor = k => {
+    if (k !== 'panelsGps' && k !== 'inverterWorkPhoto') return null;
+    const own = state.cfg[k];
+    return state.shared ? { ...state.cfg.panelsGps, enabled: own.enabled } : own;
+  };
+
+  const pageTitle = k => (k === 'panelsGps' ? 'Page 1 · Panels photo'
+    : k === 'inverterWorkPhoto' ? 'Page 2 · Inverter work completed'
+    : 'Page 3 · Inverter serial number');
+
+  $('#geoBody').innerHTML = `
+    ${missing.length ? `<p class="note">Older Section 2 PDF: missing <b>${esc(missing.join(', '))}</b>. The GEO PDF will include the ${plural(loaded.length, 'available photo', 'available photos')}.</p>` : ''}
+    <div class="geo-layout">
+      <section class="card geo-panel" aria-label="Location editor">
+        <div class="geo-paste-box">
+          <label class="lbl" for="geoPaste">Quick copy-paste location</label>
+          <textarea id="geoPaste" rows="2" placeholder="Paste Google Maps link, coordinates (11.359716, 75.874116), or Geo-Tag text…" spellcheck="false"></textarea>
+          <div class="geo-paste-acts">
+            <button class="btn sm primary" type="button" id="geoApplyPaste">Apply pasted text</button>
+            ${s1Loc ? '<button class="btn sm" type="button" id="geoUseS1">Use Section 1 location</button>' : ''}
+            ${p1Gps ? '<button class="btn sm" type="button" id="geoUseS2">Use Section 2 GPS</button>' : ''}
+          </div>
+          <p class="geo-status muted small" id="geoStatus" aria-live="polite"></p>
+        </div>
+
+        <label class="geo-check"><input type="checkbox" id="geoShared" checked><span>Same location for Image 1 &amp; Image 2</span></label>
+        <div class="geo-tabs" id="geoTabs" role="tablist" hidden>
+          ${p1 ? '<button class="geo-tab" type="button" role="tab" data-tab="panelsGps" aria-selected="true">Image 1: Panels</button>' : ''}
+          ${p2 ? `<button class="geo-tab" type="button" role="tab" data-tab="inverterWorkPhoto" aria-selected="${p1 ? 'false' : 'true'}">Image 2: Inverter work</button>` : ''}
+        </div>
+
+        <div class="geo-fields">
+          <label class="fld"><span>Date &amp; time</span>
+            <input id="geoDate" type="text" autocomplete="off" placeholder="2026/11/17 09:57"></label>
+          <label class="fld"><span>Place / City</span>
+            <input id="geoPlace" type="text" autocomplete="off" placeholder="Atholi, Kerala, India"></label>
+          <label class="fld"><span>Address</span>
+            <textarea id="geoAddr" rows="2" placeholder="Road, Locality, District, State PIN, India"></textarea></label>
+          <div class="geo-coords">
+            <label class="fld"><span>Latitude</span>
+              <input id="geoLat" type="text" inputmode="decimal" autocomplete="off" placeholder="11.359716" class="mono"></label>
+            <label class="fld"><span>Longitude</span>
+              <input id="geoLng" type="text" inputmode="decimal" autocomplete="off" placeholder="75.874116" class="mono"></label>
+          </div>
+          <div class="geo-coord-acts">
+            <button class="btn sm" type="button" id="geoLookup">${ICON.pin} Fetch address &amp; map</button>
+            <label class="geo-check inline"><input type="checkbox" id="geoShowMap" checked><span>Show mini-map</span></label>
+          </div>
+          <label class="fld geo-file-fld"><span>PDF file name</span>
+            <input id="geoFileName" type="text" autocomplete="off" value="${esc(state.outName)}"></label>
+        </div>
+      </section>
+
+      <section class="geo-previews" aria-label="Live GEO PDF preview">
+        ${loaded.map((p, idx) => {
+          const editable = p.key === 'panelsGps' || p.key === 'inverterWorkPhoto';
+          return `<article class="card geo-card" data-gkey="${esc(p.key)}">
+            <div class="geo-card-head">
+              <h2>${esc(pageTitle(p.key))}</h2>
+              ${editable
+                ? `<label class="geo-check inline"><input type="checkbox" data-toggle="${esc(p.key)}" checked><span>Show location</span></label>`
+                : '<span class="pill off">No overlay</span>'}
+            </div>
+            <div class="geo-canvas-wrap"><canvas data-preview="${idx}" aria-label="${esc(p.label)} preview"></canvas></div>
+          </article>`;
+        }).join('')}
+      </section>
+    </div>
+    <div class="sticky geo-sticky"><div class="sticky-in">
+      <button class="btn primary block" type="button" id="geoDownloadMob">${ICON.save} Download GEO PDF</button>
+    </div></div>`;
+
+  const dlBtns = [$('#geoDownload'), $('#geoDownloadMob')];
+  dlBtns.forEach(b => { b.disabled = false; });
+
+  const statusEl = $('#geoStatus');
+  const setStatus = (msg, tone = '') => {
+    statusEl.textContent = msg;
+    statusEl.className = `geo-status small${tone ? ` ${tone}` : ' muted'}`;
+  };
+
+  // Mini-map cache by rounded coordinate pair so text edits redraw instantaneously
+  const maps = new Map(); // "lat,lng" -> HTMLCanvasElement
+  const mapKey = cfg => (validCoord(cfg.lat, cfg.lng) ? `${Number(cfg.lat).toFixed(5)},${Number(cfg.lng).toFixed(5)}` : '');
+  const mapToken = () => (session && session.token ? session.token : '');
+
+  const redraw = () => {
+    loaded.forEach((p, idx) => {
+      const canvas = $(`[data-preview="${idx}"]`);
+      if (!canvas || !p.img) return;
+      const cfg = cfgFor(p.key);
+      const mm = cfg && cfg.showMap ? maps.get(mapKey(cfg)) || null : null;
+      drawGeoPhoto(canvas, p.img, cfg, mm, 1000);
+    });
+  };
+
+  const ensureMap = async cfg => {
+    if (!cfg || !cfg.showMap || !validCoord(cfg.lat, cfg.lng)) return;
+    const mk = mapKey(cfg);
+    if (maps.has(mk)) return;
+    const mm = await buildMiniMap(Number(cfg.lat), Number(cfg.lng), mapToken(), 280, 15).catch(() => null);
+    if (!alive || !mm) return;
+    maps.set(mk, mm);
+    redraw();
+  };
+
+  const syncInputs = () => {
+    const cfg = activeCfg();
+    $('#geoDate').value = cfg.dateTime;
+    $('#geoPlace').value = cfg.place;
+    $('#geoAddr').value = cfg.address;
+    $('#geoLat').value = cfg.lat;
+    $('#geoLng').value = cfg.lng;
+    $('#geoShowMap').checked = !!cfg.showMap;
+    $$('#geoTabs [data-tab]').forEach(t => t.setAttribute('aria-selected', String(t.dataset.tab === state.activeKey)));
+  };
+
+  const lookupAddress = async (targetCfg, { q = '', overwriteText = true, quiet = false } = {}) => {
+    const hasCoords = validCoord(targetCfg.lat, targetCfg.lng);
+    if (!hasCoords && !q) { if (!quiet) setStatus('Enter Latitude & Longitude or paste a Google Maps link first.', 'warn'); return; }
+    if (!quiet) setStatus('Fetching address and map…');
+    const qs = hasCoords
+      ? `lat=${encodeURIComponent(Number(targetCfg.lat))}&lng=${encodeURIComponent(Number(targetCfg.lng))}`
+      : `q=${encodeURIComponent(q)}`;
+    try {
+      const res = await api(`geo/lookup?${qs}`);
+      if (!alive) return;
+      if (res.lat != null && res.lng != null) {
+        targetCfg.lat = Number(res.lat).toFixed(6);
+        targetCfg.lng = Number(res.lng).toFixed(6);
+      }
+      if (overwriteText || !targetCfg.place) { if (res.place) targetCfg.place = res.place; }
+      if (overwriteText || !targetCfg.address) { if (res.address) targetCfg.address = res.address; }
+      syncInputs();
+      redraw();
+      await ensureMap(targetCfg);
+      if (alive && !quiet) setStatus(res.address || res.place ? 'Address and map updated.' : 'Coordinates updated (edit address manually if needed).', 'ok');
+    } catch (err) {
+      if (!alive) return;
+      await ensureMap(targetCfg);
+      if (!quiet) setStatus(err && err.offline ? 'Offline: map/address lookup needs internet. You can still type or paste the location.' : (err && err.message) || 'Could not look up that address. Edit the fields below manually.', 'warn');
+    }
+  };
+
+  const applyPasted = async raw => {
+    const text = String(raw || '').trim();
+    if (!text) return;
+    const parsed = parsePastedLocation(text);
+    const cfg = activeCfg();
+    if (parsed.dateTime) cfg.dateTime = parsed.dateTime;
+    if (parsed.place) cfg.place = parsed.place;
+    if (parsed.address) cfg.address = parsed.address;
+    if (parsed.lat && parsed.lng) { cfg.lat = parsed.lat; cfg.lng = parsed.lng; }
+    syncInputs();
+    redraw();
+    if (parsed.lat && parsed.lng) {
+      if (!parsed.place && !parsed.address) {
+        await lookupAddress(cfg, { overwriteText: true });
+      } else {
+        setStatus('Pasted location applied. Loading map…', 'ok');
+        await ensureMap(cfg);
+        if (alive) setStatus('Pasted location applied.', 'ok');
+      }
+    } else if (parsed.url) {
+      await lookupAddress(cfg, { q: parsed.url, overwriteText: !parsed.place && !parsed.address });
+    } else if (parsed.place || parsed.address || parsed.dateTime) {
+      setStatus('Pasted text applied.', 'ok');
+    } else {
+      setStatus('Could not read a location from that text. Edit the fields below directly.', 'warn');
+    }
+  };
+
+  syncInputs();
+  redraw();
+
+  // Auto-fetch address & mini-map on open when coordinates or Section 1 Maps link exist
+  if (initLat && initLng) {
+    setStatus(p1Gps ? 'Auto-filled from Section 2 GPS. Fetching address & map…' : 'Auto-filled from Section 1 location. Fetching address & map…');
+    lookupAddress(state.cfg.panelsGps, { overwriteText: !s1Landmark, quiet: false }).then(() => {
+      if (alive && state.shared) Object.assign(state.cfg.inverterWorkPhoto, { ...state.cfg.panelsGps, enabled: state.cfg.inverterWorkPhoto.enabled });
+    });
+  } else if (s1Url) {
+    setStatus('Reading Section 1 Google Maps link…');
+    lookupAddress(state.cfg.panelsGps, { q: s1Url, overwriteText: !s1Landmark, quiet: false });
+  } else {
+    setStatus('No GPS found in Section 2 or Section 1. Paste a Google Maps link, coordinates, or address above.');
+  }
+
+  // Event bindings
+  const pasteBox = $('#geoPaste');
+  pasteBox.addEventListener('paste', () => setTimeout(() => applyPasted(pasteBox.value), 0));
+  $('#geoApplyPaste').onclick = () => applyPasted(pasteBox.value);
+
+  const useS1Btn = $('#geoUseS1');
+  if (useS1Btn) useS1Btn.onclick = () => applyPasted([s1Landmark, s1Loc].filter(Boolean).join('\n'));
+  const useS2Btn = $('#geoUseS2');
+  if (useS2Btn) useS2Btn.onclick = () => {
+    const cfg = activeCfg();
+    if (p1Gps.dateTime) cfg.dateTime = p1Gps.dateTime;
+    if (p1Gps.lat && p1Gps.lng) { cfg.lat = p1Gps.lat; cfg.lng = p1Gps.lng; }
+    syncInputs(); redraw();
+    lookupAddress(cfg, { overwriteText: true });
+  };
+
+  $('#geoShared').addEventListener('change', e => {
+    state.shared = e.target.checked;
+    if (!state.shared) {
+      state.cfg.inverterWorkPhoto = { ...state.cfg.panelsGps, enabled: state.cfg.inverterWorkPhoto.enabled };
+    }
+    $('#geoTabs').hidden = state.shared;
+    syncInputs();
+    redraw();
+    ensureMap(activeCfg());
+  });
+  $('#geoTabs').addEventListener('click', e => {
+    const t = e.target.closest('[data-tab]');
+    if (!t) return;
+    state.activeKey = t.dataset.tab;
+    syncInputs();
+    ensureMap(activeCfg());
+  });
+
+  const bindField = (sel, prop, refreshMap = false) => {
+    $(sel).addEventListener('input', e => {
+      const cfg = activeCfg();
+      cfg[prop] = e.target.value;
+      redraw();
+      if (refreshMap) {
+        clearTimeout(mapTimer);
+        mapTimer = setTimeout(() => ensureMap(cfg), 400);
+      }
+    });
+  };
+  bindField('#geoDate', 'dateTime');
+  bindField('#geoPlace', 'place');
+  bindField('#geoAddr', 'address');
+  bindField('#geoLat', 'lat', true);
+  bindField('#geoLng', 'lng', true);
+
+  $('#geoShowMap').addEventListener('change', e => {
+    const cfg = activeCfg();
+    cfg.showMap = e.target.checked;
+    redraw();
+    if (cfg.showMap) ensureMap(cfg);
+  });
+  $('#geoLookup').onclick = async e => {
+    const btn = e.currentTarget;
+    busy(btn, true);
+    await lookupAddress(activeCfg(), { overwriteText: true });
+    if (alive) busy(btn, false);
+  };
+  $('#geoFileName').addEventListener('input', e => { state.outName = e.target.value; });
+
+  $$('[data-toggle]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const k = cb.dataset.toggle;
+      if (state.cfg[k]) state.cfg[k].enabled = cb.checked;
+      redraw();
+    });
+  });
+
+  const exportFinal = async () => {
+    dlBtns.forEach(b => busy(b, true));
+    try {
+      const pages = [];
+      for (const p of loaded) {
+        const cfg = cfgFor(p.key);
+        if (cfg && cfg.enabled) {
+          let mm = null;
+          if (cfg.showMap && validCoord(cfg.lat, cfg.lng)) {
+            const mk = mapKey(cfg);
+            mm = maps.get(mk) || await buildMiniMap(Number(cfg.lat), Number(cfg.lng), mapToken(), 280, 15).catch(() => null);
+            if (mm) maps.set(mk, mm);
+          }
+          pages.push(await renderGeoPhotoBlob(p, cfg, mm));
+        } else {
+          pages.push({ blob: p.blob, w: p.w, h: p.h });
+        }
+      }
+      const rawName = String(state.outName || '').trim() || geoPdfName(c);
+      const cleanName = `${fileName(rawName.replace(/\.pdf$/i, '')) || 'GEO'}.pdf`;
+      const blob = await buildGeoPdfFromPhotos(pages, cleanName);
+      const how = await savePdfFile(blob, cleanName);
+      if (how !== 'cancelled') toast(`${cleanName} saved.`, 'good');
+    } catch (err) {
+      toast('Could not make the GEO PDF. Please try again.', 'bad');
+    } finally {
+      if (alive) dlBtns.forEach(b => busy(b, false));
+    }
+  };
+  dlBtns.forEach(b => { b.onclick = exportFinal; });
+}
+
 // ---------- start ----------
 if (!location.hash) history.replaceState(null, '', '#/');
 render();
@@ -1941,7 +2281,7 @@ if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
   // so a form is never lost; otherwise it is used the next time the app opens.
   const hadWorker = !!navigator.serviceWorker.controller;
   let updateReady = false;
-  const idle = () => !$('.modal-back') && !['form', 'done'].includes(route()[0])
+  const idle = () => !$('.modal-back') && !['form', 'done', 'geo'].includes(route()[0])
     && !$$('input, textarea').some(i => i.type !== 'file' && i.value);
   const reloadIfIdle = () => { if (updateReady && document.visibilityState === 'visible' && idle()) location.reload(); };
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadWorker) { updateReady = true; reloadIfIdle(); } });
