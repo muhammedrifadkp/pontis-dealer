@@ -1,7 +1,7 @@
 // Office side: reads the PDFs dealers send, groups them by client, and takes the photos out of them.
 
 import { SECTIONS } from './fields.js';
-import { readPdfData } from './pdf.js';
+import { readPdfData, buildGeoPdf } from './pdf.js';
 
 // Reads the details stored in each PDF. Each row keeps its file, so the PDF can be kept too.
 export async function readPdfFiles(files) {
@@ -88,6 +88,31 @@ export async function extractPhotos(pdfBlob) {
 
 // A safe file name: no characters that Windows, Android or iPhone refuse
 export const fileName = s => String(s).replace(/[\\/:*?"<>|\x00-\x1F]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 120);
+
+// ---------- GEO PDF (3 full-bleed photos from a Section 2 PDF) ----------
+// Order: 1) Panels GPS photo, 2) Inverter work completed photo, 3) Inverter serial number photo.
+export const GEO_KEYS = ['panelsGps', 'inverterWorkPhoto', 'inverterSerialPhoto'];
+
+export function pickGeoPhotos(photos) {
+  const byKey = new Map(SECTIONS[2].fields.map(f => [f.key, f.label]));
+  const norm = s => String(s || '').trim().toLowerCase();
+  const found = [], missing = [];
+  for (const key of GEO_KEYS) {
+    const label = byKey.get(key);
+    if (!label) continue;
+    const target = norm(label);
+    const hit = photos.find(p => norm(p.label) === target || norm(p.label).startsWith(`${target} (`));
+    if (hit) found.push(hit);
+    else missing.push(label);
+  }
+  return { found, missing };
+}
+
+export const geoPdfName = c => `${fileName(`${c.name && c.name !== 'No name' ? c.name : (c.consumer ? `Consumer ${c.consumer}` : 'Client')} GEO`)}.pdf`;
+
+export async function buildGeoPdfFromPhotos(photos, name) {
+  return buildGeoPdf(photos, name.replace(/\.pdf$/i, ''));
+}
 
 // ---------- ZIP (stored, no compression: JPEGs do not get smaller) ----------
 const CRC = (() => {

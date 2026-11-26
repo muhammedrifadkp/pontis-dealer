@@ -60,6 +60,7 @@ export const SECTION_2 = [
   { key: 'inverterBrandOther', label: 'Inverter brand name', type: 'text', showIf: v => v.inverterBrand === 'Other' },
   { key: 'inverterSerial', label: 'Inverter serial number', type: 'serial' },
   { key: 'inverterSerialPhoto', label: 'Inverter serial number photo', type: 'photo', readInto: 'inverterSerial' },
+  { key: 'inverterWorkPhoto', label: 'Inverter work completed photo', type: 'photo', hint: 'Clear photo of the completed inverter installation (inverter, ACDB/DCDB, earthing and meter box)' },
   { key: 'meterSerial', label: 'Energy meter serial number', type: 'serial' },
   { key: 'meterSerialPhoto', label: 'Energy meter serial number photo', type: 'photo', readInto: 'meterSerial' },
   { key: 'meterCodePhoto', label: 'Energy meter upper code photo', type: 'photo' }

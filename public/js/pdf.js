@@ -249,6 +249,47 @@ export async function buildClientPdf(d) {
   return writePdf(pages, images, { title: `${sec.title} ${sec.subtitle} – ${d.values.name || ''}`, data: hex(new TextEncoder().encode(JSON.stringify(data))) });
 }
 
+// Full-bleed photo-only PDF (one photo per page, each page sized to the photo's aspect ratio within 612 × 792 pt).
+// Used on the office/staff side to create "<Customer Name> GEO.pdf" from Section 2 photos.
+// photos: [{ blob, w, h }]
+export async function buildGeoPdf(photos, title = 'GEO') {
+  if (!photos || !photos.length) throw new Error('No photos to include in the GEO PDF.');
+  const MAX_W = 612, MAX_H = 792;
+  const items = [];
+  for (const p of photos) {
+    const bytes = new Uint8Array(await p.blob.arrayBuffer());
+    const w = p.w > 0 ? p.w : MAX_W, h = p.h > 0 ? p.h : MAX_H;
+    const k = Math.min(MAX_W / w, MAX_H / h);
+    items.push({ bytes, w, h, pw: +(w * k).toFixed(2), ph: +(h * k).toFixed(2) });
+  }
+  const parts = [], offsets = [];
+  let len = 0;
+  const push = x => { const b = typeof x === 'string' ? latin1(x) : x; parts.push(b); len += b.length; };
+  const obj = (n, write) => { offsets[n] = len; push(`${n} 0 obj\n`); write(); push('\nendobj\n'); };
+  const imgBase = 4, pageBase = imgBase + items.length;
+  push('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n');
+  obj(1, () => push('<< /Type /Catalog /Pages 2 0 R >>'));
+  obj(2, () => push(`<< /Type /Pages /Count ${items.length} /Kids [${items.map((_, i) => `${pageBase + i * 2} 0 R`).join(' ')}] >>`));
+  obj(3, () => push(`<< /Title ${pdfText(title)} /Producer ${pdfText('Pontis Energy Dealer App')} >>`));
+  items.forEach((im, i) => obj(imgBase + i, () => {
+    push(`<< /Type /XObject /Subtype /Image /Width ${im.w} /Height ${im.h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${im.bytes.length} >>\nstream\n`);
+    push(im.bytes);
+    push('\nendstream');
+  }));
+  items.forEach((im, i) => {
+    const n = pageBase + i * 2;
+    const name = `Im${i + 1}`;
+    obj(n, () => push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${im.pw} ${im.ph}] /Resources << /XObject << /${name} ${imgBase + i} 0 R >> >> /Contents ${n + 1} 0 R >>`));
+    const content = latin1(`q ${im.pw.toFixed(2)} 0 0 ${im.ph.toFixed(2)} 0 0 cm /${name} Do Q\n`);
+    obj(n + 1, () => { push(`<< /Length ${content.length} >>\nstream\n`); push(content); push('\nendstream'); });
+  });
+  const count = pageBase + items.length * 2, xref = len;
+  push(`xref\n0 ${count}\n0000000000 65535 f \n`);
+  for (let n = 1; n < count; n++) push(`${String(offsets[n]).padStart(10, '0')} 00000 n \n`);
+  push(`trailer\n<< /Size ${count} /Root 1 0 R /Info 3 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  return new Blob(parts, { type: 'application/pdf' });
+}
+
 // Reads the details stored in a PDF made by this app (null for other PDFs)
 export function readPdfData(buffer) {
   const bytes = new Uint8Array(buffer);

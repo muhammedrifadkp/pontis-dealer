@@ -8,7 +8,7 @@ import * as store from './store.js';
 import * as scan from './scan.js';
 import { preparePhoto, getPosition, readExifGps, fmtCoord } from './media.js';
 import { buildClientPdf } from './pdf.js';
-import { readPdfFiles, groupClients, clientKey, extractPhotos, savePhotos, fileName, download } from './office.js';
+import { readPdfFiles, groupClients, clientKey, extractPhotos, pickGeoPhotos, geoPdfName, buildGeoPdfFromPhotos, savePhotos, fileName, download } from './office.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -1567,6 +1567,41 @@ async function openPdf(ref, name) {
 }
 const pdfName = (c, r) => `${fileName(`${c.name}${c.consumer ? ` - ${c.consumer}` : ''} - Section ${r.section}`)}.pdf`;
 
+// Builds and saves the 3-photo "<Customer Name> GEO.pdf" from a Section 2 PDF in one click
+async function exportGeoPdf(c, r, btn, existingPhotos = null) {
+  if (!r || r.section !== 2) return;
+  if (btn) busy(btn, true);
+  try {
+    let list = existingPhotos;
+    if (!list) {
+      const pdf = await store.getOfficePdf(r.ref).catch(() => null);
+      if (!pdf) { toast('This Section 2 PDF is not on this device. Add it again from WhatsApp.', 'bad'); return; }
+      list = await extractPhotos(pdf);
+    }
+    const { found, missing } = pickGeoPhotos(list);
+    if (!found.length) {
+      toast('Could not find the GEO photos in this Section 2 PDF.', 'bad');
+      return;
+    }
+    if (missing.length) {
+      const ok = await confirmBox(
+        'Some GEO photos are missing',
+        `This Section 2 PDF does not have: ${missing.join(', ')}. Make the GEO PDF with the ${plural(found.length, 'available photo', 'available photos')} anyway?`,
+        'Make GEO PDF'
+      );
+      if (!ok) return;
+    }
+    const name = geoPdfName(c);
+    const blob = await buildGeoPdfFromPhotos(found, name);
+    const how = await savePdfFile(blob, name);
+    if (how !== 'cancelled') toast(`${name} ready.`, 'good');
+  } catch (err) {
+    toast('Could not make the GEO PDF.', 'bad');
+  } finally {
+    if (btn) busy(btn, false);
+  }
+}
+
 async function deleteClients(clients) {
   const n = clients.length, forms = clients.reduce((a, c) => a + c.rows.length, 0);
   const who = n === 1 ? clients[0].name : plural(n, 'client', 'clients');
@@ -1671,6 +1706,7 @@ function clientsView() {
           </span></a>
         <div class="client-acts">
           ${forms.map(r => `<button class="btn sm" type="button" data-open="${esc(r.ref)}" data-key="${esc(c.key)}"${pdfRefs.has(r.ref) ? '' : ' disabled'}>${ICON.file} S${r.section} PDF</button>`).join('')}
+          ${c.s2 ? `<button class="btn sm primary" type="button" data-geopdf="${esc(c.s2.ref)}" data-key="${esc(c.key)}"${pdfRefs.has(c.s2.ref) ? '' : ' disabled'}>${ICON.save} GEO PDF</button>` : ''}
           <button class="btn sm ghost danger-text icon-sm" type="button" data-del="${esc(c.key)}" aria-label="Delete ${esc(c.name)}" title="Delete">${ICON.trash}</button>
         </div></li>`;
     }).join('') : `<li class="empty card"><p class="muted">No client matches these filters.</p><button class="btn sm" type="button" data-clearf>Clear filters</button></li>`;
@@ -1712,6 +1748,8 @@ function clientsView() {
     if (e.target.closest('#clearF, [data-clearf]')) { clearFilters(); return; }
     const op = e.target.closest('[data-open]');
     if (op) { const c = clients.find(x => x.key === op.dataset.key), r = c.rows.find(x => x.ref === op.dataset.open); openPdf(r.ref, pdfName(c, r)); return; }
+    const geo = e.target.closest('[data-geopdf]');
+    if (geo) { const c = clients.find(x => x.key === geo.dataset.key), r = c && c.rows.find(x => x.ref === geo.dataset.geopdf); exportGeoPdf(c, r, geo); return; }
     const del = e.target.closest('[data-del]');
     if (del) { if (await deleteClients([clients.find(x => x.key === del.dataset.del)])) load(); return; }
     if (e.target.closest('#selNone')) { selected.clear(); $$('[data-pick]').forEach(i => { i.checked = false; i.closest('.client').classList.remove('picked'); }); drawSel(); return; }
@@ -1756,7 +1794,8 @@ async function clientView(key) {
           <h2 id="h-${esc(r.ref)}"><span class="tag${r.section === 2 ? ' sage' : ''}">${esc(sec.title)}</span> ${esc(sec.subtitle)}${r.mode ? ` · ${esc(modeLabel(r.mode))}` : ''}</h2>
           <span class="muted small">Received ${esc(timeFmt.format(r.createdAt))} · Ref <span class="mono">${esc(r.ref)}</span></span>
           <div class="form-card-acts"><button class="btn sm" type="button" data-openpdf>${ICON.file} Open PDF</button>
-            <button class="btn sm" type="button" data-savepdf>${ICON.save} Save PDF</button></div>
+            <button class="btn sm" type="button" data-savepdf>${ICON.save} Save PDF</button>
+            ${r.section === 2 ? `<button class="btn sm primary" type="button" data-geopdf>${ICON.save} GEO PDF</button>` : ''}</div>
         </div>
         <details class="fields-box" open><summary>Details (${fields.length})</summary>
           <dl class="details">${fields.map(f => `<div><dt>${esc(f.label)}</dt><dd><span>${valueHtml(r.fields[f.key])}</span>${r.fields[f.key] ? `<button class="copy" type="button" data-copy="${esc(r.fields[f.key])}" aria-label="Copy ${esc(f.label)}" title="Copy">${ICON.copy}</button>` : ''}</dd></div>`).join('')}</dl></details>
@@ -1772,7 +1811,7 @@ async function clientView(key) {
     const box = $(`[data-ref="${CSS.escape(r.ref)}"]`);
     const out = $('[data-photos]', box);
     const pdf = await store.getOfficePdf(r.ref).catch(() => null);
-    $$('[data-openpdf], [data-savepdf]', box).forEach(b => { b.disabled = !pdf; });
+    $$('[data-openpdf], [data-savepdf], [data-geopdf]', box).forEach(b => { b.disabled = !pdf; });
     if (!pdf) {
       out.innerHTML = `<p class="note">The PDF for this form is not on this device. Add the same PDF from WhatsApp to see its photos.</p>${addPdfButton('Add this PDF', '')}`;
       return;
@@ -1839,6 +1878,8 @@ async function clientView(key) {
       if (blob) await savePdfFile(blob, pdfName(c, r)); else toast('This PDF is not on this device.', 'bad');
       return;
     }
+    const geo = e.target.closest('[data-geopdf]');
+    if (geo) { exportGeoPdf(c, r, geo, list.length ? list : null); return; }
     const view = e.target.closest('[data-view]');
     if (view) { viewer(list, Number(view.dataset.view)); return; }
     const save = e.target.closest('[data-save]');
@@ -1866,9 +1907,10 @@ async function clientView(key) {
 async function savePdfFile(blob, name) {
   const file = typeof File === 'function' ? new File([blob], name, { type: 'application/pdf' }) : null;
   if (file && matchMedia('(pointer: coarse)').matches && navigator.canShare && navigator.canShare({ files: [file] })) {
-    try { await navigator.share({ files: [file] }); return; } catch (err) { if (err && err.name === 'AbortError') return; }
+    try { await navigator.share({ files: [file] }); return 'shared'; } catch (err) { if (err && err.name === 'AbortError') return 'cancelled'; }
   }
   download(blob, name);
+  return 'downloaded';
 }
 
 // ---------- start ----------
