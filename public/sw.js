@@ -2,7 +2,7 @@
 // signal, and forms and PDFs work without internet. Logins (/api) always go to the server.
 // Raise VERSION with every release: phones then fetch the new files in the background and switch to
 // them together (the open app reloads itself when no form is open, otherwise on the next start).
-const VERSION = '2026.11.27-1';
+const VERSION = '2026.11.27-2';
 const CACHE = `pontis-dealer-${VERSION}`;
 // The QR code reader (about 1 MB) is kept apart, so phones fetch it again only when it changes, not with every release
 const VENDOR = 'pontis-vendor-zxing-3.1.7';

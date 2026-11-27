@@ -290,17 +290,169 @@ export async function buildGeoPdf(photos, title = 'GEO') {
   return new Blob(parts, { type: 'application/pdf' });
 }
 
-// Reads the details stored in a PDF made by this app (null for other PDFs)
-export function readPdfData(buffer) {
+// ---------- reading PDFs back ----------
+// A PDF made here can come back re-saved by another app (a phone's PDF viewer, "Save as PDF", PDFium…).
+// Those keep the pages but rewrite the file: streams get compressed, the layout of the file changes and
+// the hidden /PontisData is dropped. So the reader finds objects by scanning, not by fixed offsets.
+const inflate = async bytes => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer());
+
+export function openPdf(buffer) {
   const bytes = new Uint8Array(buffer);
   let s = '';
   for (let i = 0; i < bytes.length; i += 65536) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 65536));
-  const m = s.match(/\/PontisData\s*<([0-9A-Fa-f]+)>/);
-  if (!m) return null;
-  const raw = new Uint8Array(m[1].length / 2);
-  for (let i = 0; i < raw.length; i++) raw[i] = parseInt(m[1].substr(i * 2, 2), 16);
-  try {
-    const data = JSON.parse(new TextDecoder().decode(raw));
-    return data && data.app === 'pontis-dealer' ? data : null;
-  } catch (e) { return null; }
+  const objs = new Map(); // n -> { dict, start, len, lenRef }
+  const head = /(\d+)\s+\d+\s+obj\b/g;
+  let m;
+  while ((m = head.exec(s))) {
+    const p = head.lastIndex, end = s.indexOf('endobj', p), st = s.indexOf('stream', p);
+    if (end < 0) break;
+    if (st >= 0 && st < end) {
+      const dict = s.slice(p, st);
+      const start = st + 6 + (s[st + 6] === '\r' ? 2 : 1);
+      const direct = dict.match(/\/Length\s+(\d+)(?!\s+\d+\s+R)/), ref = dict.match(/\/Length\s+(\d+)\s+\d+\s+R/);
+      let len = direct ? +direct[1] : -1;
+      if (len < 0 || s.slice(start + len, start + len + 12).indexOf('endstream') < 0) {
+        const es = s.indexOf('endstream', start);
+        len = es < 0 ? 0 : es - start;
+        if (s[start + len - 1] === '\n') len--;
+        if (s[start + len - 1] === '\r') len--;
+      }
+      objs.set(+m[1], { dict, start, len, lenRef: ref ? +ref[1] : 0 });
+      head.lastIndex = Math.max(start + len, s.indexOf('endobj', start + len) + 6);
+    } else {
+      objs.set(+m[1], { dict: s.slice(p, end) });
+      head.lastIndex = end + 6;
+    }
+  }
+  const dict = n => (objs.get(n) || {}).dict || '';
+  const refOf = (d, key) => { const r = d.match(new RegExp(`/${key}\\s*(\\d+)\\s+\\d+\\s+R`)); return r ? +r[1] : 0; };
+  // a sub-dictionary written inline, or the object it points to
+  const sub = (d, key) => {
+    const r = refOf(d, key);
+    if (r) return dict(r);
+    const i = d.indexOf(`/${key}`);
+    if (i < 0) return '';
+    let k = d.indexOf('<<', i), depth = 0;
+    if (k < 0) return '';
+    for (let j = k; j < d.length - 1; j++) {
+      if (d[j] === '<' && d[j + 1] === '<') { depth++; j++; } else if (d[j] === '>' && d[j + 1] === '>') { depth--; j++; if (!depth) return d.slice(k, j + 1); }
+    }
+    return '';
+  };
+  const raw = n => { const o = objs.get(n); return o && o.start != null ? bytes.subarray(o.start, o.start + o.len) : null; };
+  const decoded = async n => {
+    const b = raw(n);
+    if (!b) return '';
+    const out = /\/FlateDecode/.test(dict(n)) ? await inflate(b) : b;
+    let t = '';
+    for (let i = 0; i < out.length; i += 65536) t += String.fromCharCode.apply(null, out.subarray(i, i + 65536));
+    return t;
+  };
+  // the pages in order, each with its resources (inherited from the page tree when not on the page)
+  const pages = () => {
+    const list = [], seen = new Set();
+    const walk = (n, res) => {
+      if (!n || seen.has(n)) return;
+      seen.add(n);
+      const d = dict(n), r = /\/Resources/.test(d) ? sub(d, 'Resources') : res;
+      const kids = d.match(/\/Kids\s*\[([^\]]*)\]/);
+      if (kids) { for (const k of kids[1].matchAll(/(\d+)\s+\d+\s+R/g)) walk(+k[1], r); return; }
+      const xo = new Map([...sub(r, 'XObject').matchAll(/\/([^\s/<>\[\]]+)\s*(\d+)\s+\d+\s+R/g)].map(x => [x[1], +x[2]]));
+      const arr = d.match(/\/Contents\s*\[([^\]]*)\]/);
+      const contents = arr ? [...arr[1].matchAll(/(\d+)\s+\d+\s+R/g)].map(x => +x[1]) : [refOf(d, 'Contents')].filter(Boolean);
+      list.push({ n, xo, content: async () => (await Promise.all(contents.map(decoded))).join('\n') });
+    };
+    const trailerRoot = [...s.matchAll(/\/Root\s*(\d+)\s+\d+\s+R/g)].pop();
+    let root = trailerRoot ? refOf(dict(+trailerRoot[1]), 'Pages') : 0;
+    if (!root) for (const [n, o] of objs) if (/\/Type\s*\/Pages\b/.test(o.dict) && !/\/Parent\b/.test(o.dict)) { root = n; break; }
+    walk(root, '');
+    return list;
+  };
+  return { s, dict, raw, decoded, pages };
+}
+
+const WIN_BACK = { 0x85: '…', 0x91: '‘', 0x92: '’', 0x93: '“', 0x94: '”', 0x95: '•', 0x96: '–', 0x97: '—' };
+export const pdfString = str => str.replace(/\\([0-7]{1,3}|.)/g, (_, c) => /^[0-7]+$/.test(c) ? String.fromCharCode(parseInt(c, 8)) : ({ n: '\n', r: '\r', t: '\t' }[c] ?? c));
+export const fromAnsi = str => str.replace(/[\x85\x91-\x97]/g, c => WIN_BACK[c.charCodeAt(0)]);
+
+// The text drawn on a page: [{ font, size, x, y, white, text (WinAnsi) }] in drawing order
+export function pageTexts(content) {
+  const out = [];
+  for (const m of content.matchAll(/\/(F\d+)\s+([\d.]+)\s+Tf\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg\s+([\d.-]+)\s+([\d.-]+)\s+Td\s*\(((?:\\[\s\S]|[^\\)])*)\)\s*Tj/g)) {
+    out.push({ font: m[1], size: +m[2], white: +m[3] > 0.99 && +m[4] > 0.99 && +m[5] > 0.99, x: +m[6], y: +m[7], text: pdfString(m[8]) });
+  }
+  return out;
+}
+
+// Rebuilds the details from the printed table, for a PDF that lost /PontisData when it was re-saved
+async function readPdfText(pdf) {
+  const pages = pdf.pages();
+  if (!pages.length) return null;
+  const first = pageTexts(await pages[0].content());
+  const title = first.find(t => t.font === 'F2' && t.size === 14 && /^Client details \xB7 Section (\d)$/.test(t.text));
+  if (!title) return null;
+  const section = +title.text.match(/Section (\d)$/)[1], sec = SECTIONS[section];
+  if (!sec) return null;
+  const sub = first.find(t => t.size === 9.5 && t.font === 'F1' && t.text.startsWith(sec.subtitle));
+  const modeName = sub ? (sub.text.match(/\xB7 (Loan|Cash)$/) || [])[1] : '';
+  const dealerT = first.find(t => t.size === 9 && t.text.startsWith('Dealer: '));
+  const refT = first.find(t => t.size === 9 && /\xB7\s+Ref \S+$/.test(t.text));
+  if (!refT) return null;
+  const dm = dealerT ? fromAnsi(dealerT.text).match(/^Dealer: (.*) \(([^()]*)\)$/) : null;
+  const when = refT.text.match(/^(\d{1,2}) ([A-Za-z]+),? (\d{4})(?:,| at)? (\d{1,2}):(\d{2})\s*(am|pm)/i); // "27 Nov 2026, 3:07 am" or "15 Nov 2026 at 3:35 PM"
+  let createdAt = 0;
+  if (when) {
+    const mon = 'jan feb mar apr may jun jul aug sep oct nov dec'.split(' ').indexOf(when[2].slice(0, 3).toLowerCase());
+    const hr = (+when[4] % 12) + (/pm/i.test(when[6]) ? 12 : 0);
+    createdAt = Date.UTC(+when[3], mon, +when[1], hr, +when[5]) - 330 * 60000; // IST is UTC+5:30
+  }
+
+  // table rows: bold label lines at the left, value lines to the right, on the first page and its "continued" pages
+  const LABEL_X = M + 6, VALUE_X = M + 178 + 6, valueW = W - 2 * M - 178 - 12;
+  const rows = [];
+  for (let i = 0; i < pages.length; i++) {
+    const texts = i ? pageTexts(await pages[i].content()) : first;
+    if (i && !texts.some(t => t.font === 'F2' && t.size === 14 && t.text === `${sec.title} (continued)`)) break;
+    let row = null;
+    for (const t of texts) {
+      if (t.size !== 9.5 || t.white) continue;
+      if (t.font === 'F2' && Math.abs(t.x - LABEL_X) < 1) {
+        if (!row || row.values.length) { row = { label: [], values: [] }; rows.push(row); }
+        row.label.push(t.text);
+      } else if (t.font === 'F1' && Math.abs(t.x - VALUE_X) < 1 && row) row.values.push(t.text);
+    }
+  }
+  // lines broken inside a long word (a link) join without a space
+  const joinLines = (lines, maxW, bold) => lines.reduce((acc, l, i) => {
+    if (!i) return l;
+    const prev = lines[i - 1];
+    return acc + (!prev.includes(' ') && textW(prev, 9.5, bold) > maxW - 12 ? '' : ' ') + l;
+  }, '');
+  const byLabel = new Map(rows.map(r => [joinLines(r.label, 178 - 12, true), joinLines(r.values, valueW, false)]));
+  const fields = {};
+  for (const f of sec.fields) {
+    if (isPhoto(f) || !byLabel.has(ansi(f.label))) continue;
+    const v = fromAnsi(byLabel.get(ansi(f.label)));
+    fields[f.key] = v === '—' ? '' : v;
+  }
+  if (!Object.keys(fields).length) return null;
+  return {
+    app: 'pontis-dealer', v: 1, section, mode: modeName ? modeName.toLowerCase() : '', ref: refT.text.match(/Ref (\S+)$/)[1], createdAt,
+    dealer: dm ? { name: dm[1], phone: dm[2] } : {}, fields, fromText: true
+  };
+}
+
+// Reads the details stored in a PDF made by this app (null for other PDFs)
+export async function readPdfData(buffer) {
+  const pdf = openPdf(buffer);
+  const m = pdf.s.match(/\/PontisData\s*<([0-9A-Fa-f]+)>/);
+  if (m) {
+    const raw = new Uint8Array(m[1].length / 2);
+    for (let i = 0; i < raw.length; i++) raw[i] = parseInt(m[1].substr(i * 2, 2), 16);
+    try {
+      const data = JSON.parse(new TextDecoder().decode(raw));
+      if (data && data.app === 'pontis-dealer') return data;
+    } catch (e) { /* fall back to the printed details */ }
+  }
+  try { return await readPdfText(pdf); } catch (e) { return null; }
 }

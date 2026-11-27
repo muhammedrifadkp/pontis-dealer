@@ -1,14 +1,14 @@
 // Office side: reads the PDFs dealers send, groups them by client, and takes the photos out of them.
 
 import { SECTIONS } from './fields.js';
-import { readPdfData, buildGeoPdf } from './pdf.js';
+import { readPdfData, buildGeoPdf, openPdf, pageTexts, fromAnsi } from './pdf.js';
 
 // Reads the details stored in each PDF. Each row keeps its file, so the PDF can be kept too.
 export async function readPdfFiles(files) {
   const rows = [], skipped = [];
   for (const f of files) {
     if (!/\.pdf$/i.test(f.name) && f.type !== 'application/pdf') { skipped.push(f.name); continue; }
-    const data = readPdfData(await f.arrayBuffer());
+    const data = await readPdfData(await f.arrayBuffer());
     if (data && SECTIONS[data.section] && data.ref && data.fields) rows.push({ ...data, file: f }); else skipped.push(f.name);
   }
   return { rows, skipped };
@@ -41,48 +41,27 @@ export function groupClients(rows) {
 // ---------- photos inside a PDF made by this app ----------
 // The app puts each photo in the PDF as a JPEG on a page of its own, titled with the field's name,
 // so the photos come out exactly as they went in.
-const WIN_BACK = { 0x85: '…', 0x91: '‘', 0x92: '’', 0x93: '“', 0x94: '”', 0x95: '•', 0x96: '–', 0x97: '—' };
-const pdfString = s => s.replace(/\\(.)/g, '$1').replace(/[\x85\x91-\x97]/g, c => WIN_BACK[c.charCodeAt(0)]);
-
+// Works on PDFs re-saved by another app too (compressed pages, different file layout).
 export async function extractPhotos(pdfBlob) {
-  const bytes = new Uint8Array(await pdfBlob.arrayBuffer());
-  let s = '';
-  for (let i = 0; i < bytes.length; i += 65536) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 65536));
-  // where each object starts, from the cross-reference table at the end
-  const sx = s.slice(-64).match(/startxref\s+(\d+)\s+%%EOF/);
-  if (!sx) return [];
-  const xm = s.slice(+sx[1], +sx[1] + 40).match(/^xref\s+0 (\d+)\s+/);
-  if (!xm) return [];
-  const table = +sx[1] + xm[0].length, at = [];
-  for (let n = 1; n < +xm[1]; n++) at[n] = +s.substr(table + n * 20, 10);
-  const objText = n => { const a = at[n]; const e = s.indexOf('endobj', a); return a >= 0 && e > a ? s.slice(a, e) : ''; };
-  const stream = n => { // [start, length] of an object's stream bytes
-    const t = objText(n), len = t.match(/\/Length (\d+)/), k = t.indexOf('stream\n');
-    return len && k >= 0 ? [at[n] + k + 7, +len[1]] : null;
-  };
-
-  const kids = (objText(2).match(/\/Kids \[([^\]]*)\]/) || [])[1] || '';
+  const pdf = openPdf(await pdfBlob.arrayBuffer());
   const photos = [];
   let pageNo = 0;
-  for (const m of kids.matchAll(/(\d+) 0 R/g)) {
+  for (const page of pdf.pages()) {
     pageNo++;
-    const page = objText(+m[1]);
-    const xo = new Map([...page.matchAll(/\/(Im\d+) (\d+) 0 R/g)].map(x => [x[1], +x[2]]));
-    const c = stream(+((page.match(/\/Contents (\d+) 0 R/) || [])[1] || 0));
-    if (!c) continue;
-    const content = s.substr(c[0], c[1]);
-    const used = [...content.matchAll(/\/(Im\d+) Do/g)].map(x => x[1]).filter(n => n !== 'Im1'); // Im1 is the logo
-    if (!used.length || !xo.has(used[0])) continue;
-    const imgObj = xo.get(used[0]), meta = objText(imgObj), data = stream(imgObj);
-    if (!data || !/\/DCTDecode/.test(meta)) continue;
-    const title = content.match(/\/F2 13 Tf [^\n]*?\(((?:\\.|[^\\)])*)\) Tj/);
-    const gpsMatch = content.match(/\/F2 8\.5 Tf [^\n]*?\((GPS:(?:\\.|[^\\)])*)\) Tj/);
+    const content = await page.content();
+    const used = [...content.matchAll(/\/(Im\d+)\s+Do/g)].map(x => x[1]).filter(n => n !== 'Im1'); // Im1 is the logo
+    if (!used.length || !page.xo.has(used[0])) continue;
+    const imgObj = page.xo.get(used[0]), meta = pdf.dict(imgObj), data = pdf.raw(imgObj);
+    if (!data || !/\/DCTDecode/.test(meta) || /\/FlateDecode/.test(meta)) continue;
+    const texts = pageTexts(content);
+    const title = texts.find(t => t.font === 'F2' && t.size === 13);
+    const gps = texts.find(t => t.font === 'F2' && t.size === 8.5 && t.text.startsWith('GPS:'));
     photos.push({
-      label: title ? pdfString(title[1]) : `Photo ${photos.length + 1}`,
-      gpsLine: gpsMatch ? pdfString(gpsMatch[1]) : '',
+      label: title ? fromAnsi(title.text) : `Photo ${photos.length + 1}`,
+      gpsLine: gps ? fromAnsi(gps.text) : '',
       page: pageNo,
-      w: +((meta.match(/\/Width (\d+)/) || [])[1] || 0), h: +((meta.match(/\/Height (\d+)/) || [])[1] || 0),
-      blob: new Blob([bytes.subarray(data[0], data[0] + data[1])], { type: 'image/jpeg' })
+      w: +((meta.match(/\/Width\s*(\d+)/) || [])[1] || 0), h: +((meta.match(/\/Height\s*(\d+)/) || [])[1] || 0),
+      blob: new Blob([data.slice()], { type: 'image/jpeg' })
     });
   }
   return photos;
