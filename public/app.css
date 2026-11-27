@@ -404,3 +404,18 @@ body.modal-open{overflow:hidden}
   .brand span{display:none}
 }
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+/* clients: Section 1 and Section 2 side by side on wide screens, one column on phones */
+.wrap.xwide{max-width:1240px}
+.client-cols{display:grid;gap:22px;align-items:start}
+.client-cols[hidden],.client-col[hidden]{display:none}
+.col-head{display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;font-size:16px;color:var(--navy-d);margin:0 0 10px;padding:0 2px}
+.col-head .muted{font-weight:500;font-size:14px}
+.col-n{margin-left:auto;min-width:28px;padding:2px 9px;border-radius:999px;background:#fff;border:1px solid var(--line);font-size:14px;text-align:center;font-variant-numeric:tabular-nums}
+.col-empty{padding:18px 14px}
+@media (min-width:1000px){
+  .client-cols{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .client-cols.single{grid-template-columns:minmax(0,1fr)}
+  .client-cols:not(.single) .client{grid-template-columns:auto 1fr}
+  .client-cols:not(.single) .client-acts{grid-column:2;justify-content:flex-start}
+}

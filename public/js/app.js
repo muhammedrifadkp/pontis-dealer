@@ -1591,7 +1591,7 @@ function clientsView() {
   clientsView.query = qp.toString() ? `?${qp}` : '';
   const st = { q: qp.get('q') || '', dealer: qp.get('dealer') || '', status: qp.get('status') || '', type: qp.get('type') || '', sort: qp.get('sort') || 'new' };
   const selected = new Set();
-  app.innerHTML = `${officeBar()}<main class="wrap wide drop-page" id="main">
+  app.innerHTML = `${officeBar()}<main class="wrap wide xwide drop-page" id="main">
     <div data-install-slot></div>
     <div class="head-row"><h1>Clients</h1>${addPdfButton()}</div>
     <p class="muted small intro">Save the PDFs dealers send on WhatsApp, then add them here or drop them on this page.</p>
@@ -1641,7 +1641,17 @@ function clientsView() {
       <div class="select-bar" id="selBar" hidden><span id="selCount"></span>
         <button class="btn sm danger" type="button" id="delSel">${ICON.trash} Delete…</button>
         <button class="btn sm ghost" type="button" id="selNone">Cancel</button></div>
-      <ul class="clients" id="clientList"></ul>
+      <div class="client-cols" id="clientCols">
+        <section class="client-col" id="col-s1" aria-labelledby="h-s1">
+          <h2 class="col-head" id="h-s1"><span class="pill wait">S1</span> Section 1 <span class="muted">· waiting for Section 2</span><b class="col-n" id="n-s1"></b></h2>
+          <ul class="clients" id="list-s1"></ul>
+        </section>
+        <section class="client-col" id="col-s2" aria-labelledby="h-s2">
+          <h2 class="col-head" id="h-s2"><span class="pill ok">S2</span> Section 2 <span class="muted">· installed</span><b class="col-n" id="n-s2"></b></h2>
+          <ul class="clients" id="list-s2"></ul>
+        </section>
+      </div>
+      <div id="noMatch"></div>
       <p class="muted small storage" id="storage"></p>`;
     $('#q').addEventListener('input', e => { st.q = e.target.value; saveState(); drawList(); });
     [['#fDealer', 'dealer'], ['#fType', 'type'], ['#fSort', 'sort']].forEach(([sel, k]) => $(sel).addEventListener('change', e => { st[k] = e.target.value; saveState(); drawList(); }));
@@ -1664,7 +1674,7 @@ function clientsView() {
     const filtered = !!(st.q || st.dealer || st.status || st.type);
     $('#count').textContent = filtered ? `Showing ${shown.length} of ${plural(clients.length, 'client', 'clients')}` : plural(clients.length, 'client', 'clients');
     $('#clearF').hidden = !filtered;
-    $('#clientList').innerHTML = shown.length ? shown.map(c => {
+    const card = c => {
       const forms = [c.s1, c.s2].filter(Boolean);
       const missing = c.rows.some(r => !pdfRefs.has(r.ref));
       return `<li class="client card${selected.has(c.key) ? ' picked' : ''}">
@@ -1683,7 +1693,19 @@ function clientsView() {
           ${c.s2 ? `<button class="btn sm primary" type="button" data-geopdf="${esc(c.s2.ref)}" data-key="${esc(c.key)}"${pdfRefs.has(c.s2.ref) ? '' : ' disabled'}>${ICON.save} GEO PDF</button>` : ''}
           <button class="btn sm ghost danger-text icon-sm" type="button" data-del="${esc(c.key)}" aria-label="Delete ${esc(c.name)}" title="Delete">${ICON.trash}</button>
         </div></li>`;
-    }).join('') : `<li class="empty card"><p class="muted">No client matches these filters.</p><button class="btn sm" type="button" data-clearf>Clear filters</button></li>`;
+    };
+    // Section 1 clients (Section 2 not received yet) on the left, installed clients on the right; one column on phones
+    const cols = { s1: shown.filter(c => !c.s2), s2: shown.filter(c => c.s2) };
+    const only = st.status === 's2' ? 's1' : st.status === 'done' ? 's2' : '';
+    $('#clientCols').classList.toggle('single', !!only);
+    $('#clientCols').hidden = !shown.length;
+    for (const k of ['s1', 's2']) {
+      $(`#col-${k}`).hidden = !!only && only !== k;
+      $(`#n-${k}`).textContent = cols[k].length;
+      $(`#list-${k}`).innerHTML = cols[k].length ? cols[k].map(card).join('')
+        : `<li class="empty card col-empty"><p class="muted small">${k === 's1' ? 'No client is waiting for Section 2.' : 'No installed client yet.'}</p></li>`;
+    }
+    $('#noMatch').innerHTML = shown.length ? '' : `<div class="empty card"><p class="muted">No client matches these filters.</p><button class="btn sm" type="button" data-clearf>Clear filters</button></div>`;
     drawSel();
   };
   const drawSel = () => {
