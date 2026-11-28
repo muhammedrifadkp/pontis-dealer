@@ -1,7 +1,7 @@
 // Office side: reads the PDFs dealers send, groups them by client, and takes the photos out of them.
 
 import { SECTIONS } from './fields.js';
-import { readPdfData, buildGeoPdf, openPdf, pageTexts, fromAnsi } from './pdf.js';
+import { readPdfData, buildGeoPdf, MAX_GEO_PDF_BYTES, openPdf, pageTexts, fromAnsi } from './pdf.js';
 
 // Reads the details stored in each PDF. Each row keeps its file, so the PDF can be kept too.
 export async function readPdfFiles(files) {
@@ -91,8 +91,10 @@ export function pickGeoPhotos(photos) {
 
 export const geoPdfName = c => `${fileName(`${c.name && c.name !== 'No name' ? c.name : (c.consumer ? `Consumer ${c.consumer}` : 'Client')} GEO`)}.pdf`;
 
-export async function buildGeoPdfFromPhotos(photos, name) {
-  return buildGeoPdf(photos, name.replace(/\.pdf$/i, ''));
+export { MAX_GEO_PDF_BYTES };
+
+export async function buildGeoPdfFromPhotos(photos, name, opts) {
+  return buildGeoPdf(photos, name.replace(/\.pdf$/i, ''), opts);
 }
 
 // ---------- ZIP (stored, no compression: JPEGs do not get smaller) ----------

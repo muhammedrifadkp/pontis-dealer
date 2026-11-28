@@ -8,8 +8,8 @@ import * as store from './store.js';
 import * as scan from './scan.js';
 import { preparePhoto, getPosition, readExifGps, fmtCoord } from './media.js';
 import { buildClientPdf } from './pdf.js';
-import { readPdfFiles, groupClients, clientKey, extractPhotos, pickGeoPhotos, geoPdfName, buildGeoPdfFromPhotos, savePhotos, fileName, download } from './office.js';
-import { formatGeoDate, validCoord, parseCoords, parsePdfGpsLine, parsePastedLocation, buildMiniMap, drawGeoPhoto, renderGeoPhotoBlob, loadImgFromBlob } from './geo.js';
+import { readPdfFiles, groupClients, clientKey, extractPhotos, pickGeoPhotos, geoPdfName, buildGeoPdfFromPhotos, MAX_GEO_PDF_BYTES, savePhotos, fileName, download } from './office.js';
+import { formatGeoDate, validCoord, parseCoords, parsePdfGpsLine, parsePastedLocation, buildMiniMap, drawGeoPhoto, buildOptimizedGeoPdf, loadImgFromBlob } from './geo.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -2243,29 +2243,32 @@ async function geoView(key) {
     });
   });
 
+  const formatSize = bytes => (bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1048576).toFixed(2)} MB`);
+
   const exportFinal = async () => {
     dlBtns.forEach(b => busy(b, true));
     try {
-      const pages = [];
+      const items = [];
       for (const p of loaded) {
         const cfg = cfgFor(p.key);
-        if (cfg && cfg.enabled) {
-          let mm = null;
-          if (cfg.showMap && validCoord(cfg.lat, cfg.lng)) {
-            const mk = mapKey(cfg);
-            mm = maps.get(mk) || await buildMiniMap(Number(cfg.lat), Number(cfg.lng), mapToken(), 280, 15).catch(() => null);
-            if (mm) maps.set(mk, mm);
-          }
-          pages.push(await renderGeoPhotoBlob(p, cfg, mm));
-        } else {
-          pages.push({ blob: p.blob, w: p.w, h: p.h });
+        let mm = null;
+        if (cfg && cfg.enabled && cfg.showMap && validCoord(cfg.lat, cfg.lng)) {
+          const mk = mapKey(cfg);
+          mm = maps.get(mk) || await buildMiniMap(Number(cfg.lat), Number(cfg.lng), mapToken(), 280, 15).catch(() => null);
+          if (mm) maps.set(mk, mm);
         }
+        items.push({ photo: p, cfg: cfg && cfg.enabled ? cfg : null, miniMap: mm });
       }
       const rawName = String(state.outName || '').trim() || geoPdfName(c);
       const cleanName = `${fileName(rawName.replace(/\.pdf$/i, '')) || 'GEO'}.pdf`;
-      const blob = await buildGeoPdfFromPhotos(pages, cleanName);
+      // Optimize directly from original source images so overlays stay crisp and final PDF stays strictly <= 2 MB
+      const blob = await buildOptimizedGeoPdf(
+        items,
+        pages => buildGeoPdfFromPhotos(pages, cleanName, { maxBytes: 0 }),
+        MAX_GEO_PDF_BYTES
+      );
       const how = await savePdfFile(blob, cleanName);
-      if (how !== 'cancelled') toast(`${cleanName} saved.`, 'good');
+      if (how !== 'cancelled') toast(`${cleanName} saved (${formatSize(blob.size)}).`, 'good');
     } catch (err) {
       toast('Could not make the GEO PDF. Please try again.', 'bad');
     } finally {

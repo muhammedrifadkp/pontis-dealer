@@ -249,19 +249,10 @@ export async function buildClientPdf(d) {
   return writePdf(pages, images, { title: `${sec.title} ${sec.subtitle} – ${d.values.name || ''}`, data: hex(new TextEncoder().encode(JSON.stringify(data))) });
 }
 
-// Full-bleed photo-only PDF (one photo per page, each page sized to the photo's aspect ratio within 612 × 792 pt).
-// Used on the office/staff side to create "<Customer Name> GEO.pdf" from Section 2 photos.
-// photos: [{ blob, w, h }]
-export async function buildGeoPdf(photos, title = 'GEO') {
-  if (!photos || !photos.length) throw new Error('No photos to include in the GEO PDF.');
-  const MAX_W = 612, MAX_H = 792;
-  const items = [];
-  for (const p of photos) {
-    const bytes = new Uint8Array(await p.blob.arrayBuffer());
-    const w = p.w > 0 ? p.w : MAX_W, h = p.h > 0 ? p.h : MAX_H;
-    const k = Math.min(MAX_W / w, MAX_H / h);
-    items.push({ bytes, w, h, pw: +(w * k).toFixed(2), ph: +(h * k).toFixed(2) });
-  }
+// Strict upload-safe 2 MB ceiling (1,950,000 B < 2,000,000 B decimal MB and < 2,097,152 B binary MiB)
+export const MAX_GEO_PDF_BYTES = 1_950_000;
+
+function writeGeoPdf(items, title) {
   const parts = [], offsets = [];
   let len = 0;
   const push = x => { const b = typeof x === 'string' ? latin1(x) : x; parts.push(b); len += b.length; };
@@ -288,6 +279,93 @@ export async function buildGeoPdf(photos, title = 'GEO') {
   for (let n = 1; n < count; n++) push(`${String(offsets[n]).padStart(10, '0')} 00000 n \n`);
   push(`trailer\n<< /Size ${count} /Root 1 0 R /Info 3 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
   return new Blob(parts, { type: 'application/pdf' });
+}
+
+function decodeImageBlob(blob) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image')); };
+    img.src = url;
+  });
+}
+
+async function reencodeImageToJpeg(img, origBlob, origW, origH, maxSide, quality) {
+  const nw = img.naturalWidth || img.width || origW || 1200;
+  const nh = img.naturalHeight || img.height || origH || 900;
+  const k = maxSide > 0 ? Math.min(1, maxSide / Math.max(nw, nh)) : 1;
+  const w = Math.max(1, Math.round(nw * k)), h = Math.max(1, Math.round(nh * k));
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  try {
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, w, h);
+    const blob = await new Promise(resolve => c.toBlob(resolve, 'image/jpeg', quality));
+    if (!blob || blob.type !== 'image/jpeg') throw new Error('jpeg');
+    if (origBlob && origBlob.type === 'image/jpeg' && origBlob.size <= blob.size) {
+      return { blob: origBlob, w: origW || nw, h: origH || nh };
+    }
+    return { blob, w, h };
+  } finally {
+    c.width = c.height = 0;
+  }
+}
+
+// Full-bleed photo-only PDF (one photo per page, each page sized to the photo's aspect ratio within 612 × 792 pt).
+// Used on the office/staff side to create "<Customer Name> GEO.pdf" from Section 2 photos.
+// Guarantees output stays strictly within maxBytes (default: 1.95 MB, safely under any 2 MB upload limit).
+// photos: [{ blob, w, h }]
+export async function buildGeoPdf(photos, title = 'GEO', { maxBytes = MAX_GEO_PDF_BYTES } = {}) {
+  if (!photos || !photos.length) throw new Error('No photos to include in the GEO PDF.');
+  const MAX_W = 612, MAX_H = 792;
+  const pack = async list => {
+    const items = [];
+    for (const p of list) {
+      const bytes = new Uint8Array(await p.blob.arrayBuffer());
+      const w = p.w > 0 ? p.w : MAX_W, h = p.h > 0 ? p.h : MAX_H;
+      const k = Math.min(MAX_W / w, MAX_H / h);
+      items.push({ bytes, w, h, pw: +(w * k).toFixed(2), ph: +(h * k).toFixed(2) });
+    }
+    return writeGeoPdf(items, title);
+  };
+
+  let pdf = await pack(photos);
+  if (!maxBytes || pdf.size <= maxBytes) return pdf;
+
+  // Safety net if raw photo blobs exceed maxBytes: step down gently from original quality & resolution
+  const decoded = await Promise.all(photos.map(async p => ({ ...p, img: await decodeImageBlob(p.blob) })));
+  const tiers = [
+    { maxSide: 1600, minQ: 0.72, maxQ: 0.86 },
+    { maxSide: 1440, minQ: 0.70, maxQ: 0.84 },
+    { maxSide: 1280, minQ: 0.68, maxQ: 0.82 },
+    { maxSide: 1120, minQ: 0.64, maxQ: 0.80 },
+    { maxSide: 960, minQ: 0.56, maxQ: 0.76 },
+    { maxSide: 800, minQ: 0.44, maxQ: 0.72 },
+    { maxSide: 640, minQ: 0.35, maxQ: 0.65 }
+  ];
+  const tryTier = async (maxSide, q) => pack(await Promise.all(decoded.map(p => reencodeImageToJpeg(p.img, p.blob, p.w, p.h, maxSide, q))));
+  let smallest = pdf;
+  for (const t of tiers) {
+    const low = await tryTier(t.maxSide, t.minQ);
+    if (low.size < smallest.size) smallest = low;
+    if (low.size > maxBytes) continue;
+    let best = low;
+    const high = await tryTier(t.maxSide, t.maxQ);
+    if (high.size <= maxBytes) return high;
+    let lo = t.minQ, hi = t.maxQ;
+    for (let step = 0; step < 4; step++) {
+      const mid = +((lo + hi) / 2).toFixed(3);
+      const cur = await tryTier(t.maxSide, mid);
+      if (cur.size <= maxBytes) { best = cur; lo = mid; } else hi = mid;
+    }
+    return best;
+  }
+  return smallest;
 }
 
 // ---------- reading PDFs back ----------

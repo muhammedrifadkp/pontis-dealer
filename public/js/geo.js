@@ -4,7 +4,16 @@
 // - Renders the Baiju-GEO-style bottom overlay card (mini-map + date/time + place + address + Lat/Long)
 
 const MAX_EXPORT_SIDE = 1600;
-const EXPORT_QUALITY = 0.85;
+const EXPORT_QUALITY = 0.88;
+const GEO_SIZE_TIERS = [
+  { maxSide: 1600, minQ: 0.72, maxQ: 0.86 },
+  { maxSide: 1440, minQ: 0.70, maxQ: 0.84 },
+  { maxSide: 1280, minQ: 0.68, maxQ: 0.82 },
+  { maxSide: 1120, minQ: 0.64, maxQ: 0.80 },
+  { maxSide: 960, minQ: 0.56, maxQ: 0.76 },
+  { maxSide: 800, minQ: 0.44, maxQ: 0.72 },
+  { maxSide: 640, minQ: 0.35, maxQ: 0.65 }
+];
 const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
 const pad2 = n => String(n).padStart(2, '0');
 
@@ -286,6 +295,8 @@ export function drawGeoPhoto(canvas, img, cfg, miniMap = null, maxSide = 0) {
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#fff';
   ctx.fillRect(0, 0, w, h);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(img, 0, 0, w, h);
 
   if (!cfg || !cfg.enabled) return { w, h };
@@ -412,18 +423,59 @@ export function drawGeoPhoto(canvas, img, cfg, miniMap = null, maxSide = 0) {
   return { w, h };
 }
 
-export async function renderGeoPhotoBlob(photo, cfg, miniMap = null) {
-  if (!cfg || !cfg.enabled) return { blob: photo.blob, w: photo.w, h: photo.h };
-  const img = await loadImgFromBlob(photo.blob);
+export async function renderGeoPhotoBlob(photo, cfg, miniMap = null, { maxSide = MAX_EXPORT_SIDE, quality = EXPORT_QUALITY, forceEncode = false } = {}) {
+  const hasOverlay = !!(cfg && cfg.enabled);
+  if (!hasOverlay && !forceEncode) return { blob: photo.blob, w: photo.w, h: photo.h };
+  const img = photo.img || await loadImgFromBlob(photo.blob);
   const c = document.createElement('canvas');
   try {
-    const { w, h } = drawGeoPhoto(c, img, cfg, miniMap, MAX_EXPORT_SIDE);
-    const blob = await new Promise(resolve => c.toBlob(resolve, 'image/jpeg', EXPORT_QUALITY));
+    const { w, h } = drawGeoPhoto(c, img, hasOverlay ? cfg : null, hasOverlay ? miniMap : null, maxSide);
+    const blob = await new Promise(resolve => c.toBlob(resolve, 'image/jpeg', quality));
     if (!blob || blob.type !== 'image/jpeg') throw new Error('jpeg');
+    // For non-overlay pages (e.g. inverter serial), keep the original untouched if it is already smaller
+    if (!hasOverlay && photo.blob && photo.blob.type === 'image/jpeg' && photo.blob.size <= blob.size) {
+      return { blob: photo.blob, w: photo.w, h: photo.h };
+    }
     return { blob, w, h };
   } finally {
     c.width = c.height = 0;
   }
+}
+
+// Renders all GEO PDF pages from original source images so overlays stay vector-crisp,
+// finding the highest possible resolution & JPEG quality that stays strictly <= maxBytes.
+// items: [{ photo, cfg, miniMap }], buildPdf: (pages) => Promise<Blob>
+export async function buildOptimizedGeoPdf(items, buildPdf, maxBytes) {
+  const renderAll = async (maxSide, quality, forceEncode) => {
+    const pages = [];
+    for (const it of items) {
+      pages.push(await renderGeoPhotoBlob(it.photo, it.cfg, it.miniMap, { maxSide, quality, forceEncode }));
+    }
+    return buildPdf(pages);
+  };
+
+  // Pass 1: top quality (full 1600px, Q=0.88 on overlays, untouched original on non-overlay pages)
+  const top = await renderAll(MAX_EXPORT_SIDE, EXPORT_QUALITY, false);
+  if (!maxBytes || top.size <= maxBytes) return top;
+
+  // Pass 2: binary-search highest quality per resolution tier directly from original source images
+  let smallest = top;
+  for (const tier of GEO_SIZE_TIERS) {
+    const low = await renderAll(tier.maxSide, tier.minQ, true);
+    if (low.size < smallest.size) smallest = low;
+    if (low.size > maxBytes) continue;
+    let best = low;
+    const high = await renderAll(tier.maxSide, tier.maxQ, true);
+    if (high.size <= maxBytes) return high;
+    let lo = tier.minQ, hi = tier.maxQ;
+    for (let step = 0; step < 4; step++) {
+      const mid = +((lo + hi) / 2).toFixed(3);
+      const cur = await renderAll(tier.maxSide, mid, true);
+      if (cur.size <= maxBytes) { best = cur; lo = mid; } else hi = mid;
+    }
+    return best;
+  }
+  return smallest;
 }
 
 export { loadImgFromBlob };
